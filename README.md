@@ -193,11 +193,3 @@ A autorização externa ocorre enquanto as carteiras estão bloqueadas. Os timeo
 As notificações têm entrega **pelo menos uma vez**: se o provedor receber a mensagem e a aplicação cair antes de registrar o sucesso, pode haver reenvio. O payload inclui `transferId` para permitir deduplicação pelo provedor; não há garantia de que o mock público a implemente. As tentativas continuam enquanto o serviço estiver indisponível, sem fila de falhas definitiva.
 
 `POST /transfer` ainda não tem chave de idempotência. Se o cliente perder a resposta de uma transferência confirmada, reenviar a mesma requisição pode gerar outro pagamento. Idempotência e autenticação seriam as primeiras evoluções antes de qualquer uso real. Kafka, Redis e microsserviços não são necessários para demonstrar os fundamentos deste desafio.
-
-## Para explicar em uma entrevista
-
-Os pontos centrais estão em [TransferService](src/main/java/dev/starrk/wallet/transfer/TransferService.java), [NotificationService](src/main/java/dev/starrk/wallet/notification/NotificationService.java) e [WalletApiIT](src/test/java/dev/starrk/wallet/WalletApiIT.java). Vale conseguir explicar por que uma transação é necessária, como o lock impede gasto duplo e por que falhar ao notificar não desfaz um pagamento já concluído.
-
-Sugestão de descrição para o currículo, depois de estudar e conseguir explicar a implementação:
-
-> API REST de transferências em Java 21 e Spring Boot, com PostgreSQL, validações de negócio, controle de concorrência, integrações HTTP resilientes, testes com JUnit/Mockito/Testcontainers e execução com Docker Compose.
