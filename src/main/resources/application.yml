@@ -1,0 +1,37 @@
+spring:
+  application:
+    name: wallet-api
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5433/wallet}
+    username: ${DB_USERNAME:wallet}
+    password: ${DB_PASSWORD:wallet}
+    hikari:
+      connection-init-sql: SET lock_timeout = '5s'
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+  jackson:
+    deserialization:
+      fail-on-unknown-properties: true
+      accept-float-as-int: false
+
+services:
+  authorization-url: ${AUTHORIZATION_URL:https://util.devi.tools/api/v2/authorize}
+  notification-url: ${NOTIFICATION_URL:https://util.devi.tools/api/v1/notify}
+  connect-timeout: 2s
+  read-timeout: 3s
+
+notifications:
+  enabled: true
+  poll-delay-ms: 10000
+  retry-delay-seconds: 60
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never

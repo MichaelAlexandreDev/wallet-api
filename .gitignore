@@ -1,0 +1,9 @@
+/target/
+/.estudo/
+/.idea/
+/.vscode/
+*.iml
+.env
+*.log
+.DS_Store
+.~lock.*#

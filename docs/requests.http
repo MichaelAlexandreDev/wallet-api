@@ -1,0 +1,61 @@
+@baseUrl = http://localhost:8081
+# Substitua os IDs pelos retornados no cadastro se o banco já tiver dados.
+@payer = 1
+@payee = 2
+
+### Criar usuário comum
+POST {{baseUrl}}/users
+Content-Type: application/json
+
+{
+  "fullName": "Ana Silva",
+  "document": "11111111111",
+  "email": "ana@example.com",
+  "password": "senha-de-exemplo",
+  "type": "COMMON"
+}
+
+### Criar lojista
+POST {{baseUrl}}/users
+Content-Type: application/json
+
+{
+  "fullName": "Loja Exemplo",
+  "document": "22222222222222",
+  "email": "loja@example.com",
+  "password": "senha-de-exemplo",
+  "type": "MERCHANT"
+}
+
+### Adicionar saldo de demonstração (perfil demo)
+POST {{baseUrl}}/users/{{payer}}/deposits
+Content-Type: application/json
+
+{"value": 100.00}
+
+### Transferir
+POST {{baseUrl}}/transfer
+Content-Type: application/json
+
+{"value": 25.00, "payer": {{payer}}, "payee": {{payee}}}
+
+### Consultar saldo do pagador
+GET {{baseUrl}}/users/{{payer}}
+
+### Consultar saldo do recebedor
+GET {{baseUrl}}/users/{{payee}}
+
+### Lojista não pode pagar (422)
+POST {{baseUrl}}/transfer
+Content-Type: application/json
+
+{"value": 1.00, "payer": {{payee}}, "payee": {{payer}}}
+
+### Saldo insuficiente (422)
+POST {{baseUrl}}/transfer
+Content-Type: application/json
+
+{"value": 1000.00, "payer": {{payer}}, "payee": {{payee}}}
+
+### Health check
+GET {{baseUrl}}/actuator/health

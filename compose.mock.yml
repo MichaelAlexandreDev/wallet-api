@@ -1,0 +1,14 @@
+# Demonstração reproduzível, sem depender dos serviços públicos.
+services:
+  api:
+    environment:
+      AUTHORIZATION_URL: http://mocks/authorize
+      NOTIFICATION_URL: http://mocks/notify
+    depends_on:
+      mocks:
+        condition: service_started
+
+  mocks:
+    image: nginx:stable-alpine
+    volumes:
+      - ./docs/mock-services.conf:/etc/nginx/conf.d/default.conf:ro
