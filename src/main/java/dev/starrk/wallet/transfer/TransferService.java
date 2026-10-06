@@ -24,7 +24,16 @@ public class TransferService {
     }
 
     @Transactional
-    public TransferResponse transfer(TransferRequest request) {
+    public TransferResponse transfer(TransferRequest request, String idempotencyKey) {
+        validateIdempotencyKey(idempotencyKey);
+        var amount = request.value().setScale(2);
+        var fingerprint = TransferFingerprint.from(request);
+
+        var existing = findIdempotentResult(request.payer(), idempotencyKey, fingerprint);
+        if (existing != null) {
+            return existing;
+        }
+
         if (request.payer().equals(request.payee())) {
             throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "Origem e destino devem ser diferentes.");
         }
@@ -35,16 +44,23 @@ public class TransferService {
         User payer = first.getId().equals(request.payer()) ? first : second;
         User payee = first.getId().equals(request.payee()) ? first : second;
 
+        // Recheck after acquiring the wallet locks so concurrent requests with the same payer serialize here.
+        existing = findIdempotentResult(request.payer(), idempotencyKey, fingerprint);
+        if (existing != null) {
+            return existing;
+        }
+
         if (payer.getType() == UserType.MERCHANT) {
             throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "Lojistas não podem enviar transferências.");
         }
 
-        payer.getWallet().debit(request.value());
-        payee.getWallet().credit(request.value());
+        payer.getWallet().debit(amount);
+        payee.getWallet().credit(amount);
         // Qualquer recusa ou indisponibilidade lança uma exceção e desfaz os dois saldos.
         authorization.authorize();
 
-        var transfer = transfers.save(new Transfer(payer.getId(), payee.getId(), request.value()));
+        var transfer = transfers.save(new Transfer(payer.getId(), payee.getId(), amount,
+                idempotencyKey, fingerprint));
         return TransferResponse.from(transfer);
     }
 
@@ -57,5 +73,25 @@ public class TransferService {
     private User lockUser(Long id) {
         return users.findByIdForUpdate(id)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Usuário não encontrado: " + id));
+    }
+
+    private TransferResponse findIdempotentResult(Long payerId, String idempotencyKey, String fingerprint) {
+        var previous = transfers.findByPayerIdAndIdempotencyKey(payerId, idempotencyKey).orElse(null);
+        if (previous == null) {
+            return null;
+        }
+        if (!previous.getRequestFingerprint().equals(fingerprint)) {
+            throw new ApiException(HttpStatus.CONFLICT,
+                    "A chave de idempotência já foi usada com dados diferentes.");
+        }
+        return TransferResponse.from(previous);
+    }
+
+    private void validateIdempotencyKey(String idempotencyKey) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()
+                || idempotencyKey.codePointCount(0, idempotencyKey.length()) > 128) {
+            throw new ApiException(HttpStatus.BAD_REQUEST,
+                    "Informe uma chave de idempotência com 1 a 128 caracteres não vazios.");
+        }
     }
 }

@@ -63,6 +63,7 @@ Esse endpoint existe apenas com o perfil `demo`, ativado pelo Compose. Ele simul
 ```bash
 curl -i -X POST http://localhost:8081/transfer \
   -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: demo-transfer-001' \
   -d '{"value":25.00,"payer":1,"payee":2}'
 ```
 
@@ -79,7 +80,7 @@ Resposta `201 Created`:
 }
 ```
 
-O ID e a data são gerados pela aplicação. A transferência já está confirmada quando a API responde; `PENDING` descreve apenas a notificação. Consulte o endereço do cabeçalho `Location` para acompanhar a mudança para `SENT`.
+O ID e a data são gerados pela aplicação. A transferência já está confirmada quando a API responde; `PENDING` descreve apenas a notificação. Consulte o endereço do cabeçalho `Location` para acompanhar a mudança para `SENT` ou `FAILED`. Reenvie a mesma operação com a mesma chave em caso de timeout; use uma chave nova para cada transferência diferente.
 
 ```bash
 curl http://localhost:8081/users/1
@@ -95,7 +96,7 @@ Os saldos devem ser `75.00` e `25.00`. Há mais exemplos em [docs/requests.http]
 | POST | `/users` | Cadastra usuário comum (`COMMON`) ou lojista (`MERCHANT`) |
 | GET | `/users/{id}` | Consulta usuário e saldo |
 | POST | `/users/{id}/deposits` | Adiciona saldo fictício; somente no perfil `demo` |
-| POST | `/transfer` | Transfere conforme o contrato do desafio |
+| POST | `/transfer` | Transfere conforme o contrato do desafio; exige `Idempotency-Key` |
 | GET | `/transfer/{id}` | Consulta comprovante e situação da notificação |
 | GET | `/actuator/health` | Verifica a saúde da aplicação e do banco |
 
@@ -107,10 +108,10 @@ As respostas de erro seguem `application/problem+json`, com `status`, `title` e 
 
 | Status | Situação |
 | --- | --- |
-| 400 | JSON inválido, campos ausentes ou valores fora do formato |
+| 400 | JSON inválido, campos ausentes, valores fora do formato ou `Idempotency-Key` ausente/inválida |
 | 403 | Autorizador recusou a transferência |
 | 404 | Usuário ou transferência não encontrado |
-| 409 | CPF/CNPJ ou e-mail já cadastrado, ou conflito com restrição do banco |
+| 409 | CPF/CNPJ ou e-mail já cadastrado, conflito com restrição do banco ou reutilização de chave com outro payload |
 | 422 | Saldo insuficiente, lojista como pagador, mesma origem/destino ou limite de saldo |
 | 503 | Autorizador indisponível ou tempo de espera pelo bloqueio da carteira excedido |
 
@@ -130,10 +131,11 @@ Os pacotes são organizados por funcionalidade: `user`, `transfer`, `integration
 
 - **Dinheiro:** `BigDecimal` em Java e `NUMERIC(19,2)` no banco. Não há arredondamento silencioso de entradas com mais de duas casas decimais.
 - **Carteira:** um objeto `@Embeddable` dentro de `User`, armazenado na tabela `users`. Como cada usuário tem exatamente uma carteira, não há necessidade de uma tabela separada nesta versão.
-- **Atomicidade:** débito, crédito e comprovante são gravados na mesma transação. Recusa ou falha do autorizador desfaz tudo. Restrições SQL também impedem saldos negativos e documentos/e-mails duplicados.
+- **Atomicidade:** débito, crédito, comprovante e chave de idempotência são gravados na mesma transação. Recusa ou falha do autorizador desfaz tudo. Restrições SQL também impedem saldos negativos, documentos/e-mails duplicados e uso repetido da chave pelo mesmo pagador.
+- **Idempotência:** `POST /transfer` exige `Idempotency-Key` com até 128 caracteres, persistida por pagador junto com uma impressão digital do payload. Repetir a chave com o mesmo conteúdo devolve o recibo original; usar a mesma chave com outro conteúdo retorna `409`.
 - **Concorrência:** as duas carteiras são bloqueadas com `PESSIMISTIC_WRITE`, sempre pelo menor ID primeiro. Isso impede gasto duplo e evita deadlocks entre transferências em sentidos opostos.
 - **Serviços externos:** `RestClient` com timeout de conexão de 2 segundos e leitura de 3 segundos. Autorização exige resposta explícita de sucesso; respostas inesperadas resultam em `503`.
-- **Notificação:** o comprovante nasce com notificação pendente na mesma transação do pagamento. Um agendador consulta até dez pendências a cada ciclo, com intervalo de dez segundos após o ciclo anterior. Falhas são reagendadas para depois de 60 segundos e sobrevivem a reinícios. `FOR UPDATE SKIP LOCKED` impede dois workers de processarem simultaneamente o mesmo registro.
+- **Notificação:** o comprovante nasce com notificação pendente na mesma transação do pagamento. Um agendador consulta até dez pendências a cada ciclo, com intervalo de dez segundos após o ciclo anterior. Falhas são reagendadas para depois de 60 segundos, até cinco tentativas por padrão, e sobrevivem a reinícios. O estado `FAILED` encerra novas tentativas automáticas; `NOTIFICATION_MAX_ATTEMPTS` altera o limite. `FOR UPDATE SKIP LOCKED` impede dois workers de processarem simultaneamente o mesmo registro.
 - **Segurança básica:** senha armazenada como hash BCrypt, DTOs sem exposição de entidades e contêiner da aplicação executado sem root.
 
 ## Testes
@@ -150,16 +152,16 @@ Pré-requisitos para executar fora de contêiner: JDK 21 e Docker acessível pel
 
 No Windows, use `mvnw.cmd`. Os testes de integração são executados pelo Maven Failsafe (`*IT`) e falham se o Docker não estiver disponível; não são pulados silenciosamente.
 
-Os testes cobrem regras de saldo, precisão decimal, validação HTTP, unicidade e hashing, transferência entre usuários e para lojistas, rollback, gasto duplo, transferências em sentidos opostos e recuperação das notificações. Os clientes HTTP são exercitados contra um servidor local, incluindo timeout, recusa, resposta inválida e indisponibilidade. Os testes da aplicação usam PostgreSQL real e Mockito para controlar os serviços externos, sem depender da disponibilidade dos mocks públicos.
+Os testes cobrem regras de saldo, precisão decimal, validação HTTP, unicidade e hashing, transferência entre usuários e para lojistas, rollback, gasto duplo, transferências em sentidos opostos, replay idempotente, chaves conflitantes, concorrência com a mesma chave, limite de retentativas e disponibilidade do depósito demo por perfil. Os clientes HTTP são exercitados contra um servidor local, incluindo timeout, recusa, resposta inválida e indisponibilidade. Os testes da aplicação usam PostgreSQL real e Mockito para controlar os serviços externos, sem depender da disponibilidade dos mocks públicos.
 
 ## Desenvolvimento local e serviços oficiais
 
 ```bash
 docker compose up -d db
-./mvnw spring-boot:run -Dspring-boot.run.profiles=demo -Dspring-boot.run.arguments=--server.port=8081
+SERVER_ADDRESS=127.0.0.1 ./mvnw spring-boot:run -Dspring-boot.run.profiles=demo -Dspring-boot.run.arguments=--server.port=8081
 ```
 
-Sem o perfil `demo`, o endpoint de depósito não é registrado. O restante da API continua disponível.
+O comando limita o servidor ao computador local. Sem o perfil `demo`, o endpoint de depósito não é registrado. O restante da API continua disponível.
 
 Para usar os serviços oficiais com a aplicação em Docker, execute somente o Compose principal:
 
@@ -178,6 +180,7 @@ As URLs padrão são `https://util.devi.tools/api/v2/authorize` (`GET`) e `https
 | `DB_PASSWORD` | `wallet` — credencial apenas para desenvolvimento |
 | `AUTHORIZATION_URL` | Autorizador oficial |
 | `NOTIFICATION_URL` | Notificador oficial |
+| `NOTIFICATION_MAX_ATTEMPTS` | `5` — máximo de tentativas automáticas de notificação |
 | `SPRING_PROFILES_ACTIVE` | Sem perfil; Compose usa `demo` |
 
 O arquivo `.env.example` serve de referência para o Compose. Para executar pela IDE/Maven, configure variáveis no ambiente; o Spring não carrega `.env` automaticamente.
@@ -190,6 +193,6 @@ Este projeto prioriza o fluxo pedido no desafio. Autenticação e frontend estã
 
 A autorização externa ocorre enquanto as carteiras estão bloqueadas. Os timeouts limitam a espera, mas esse desenho reduz o throughput de carteiras muito movimentadas. É uma escolha simples para este porte.
 
-As notificações têm entrega **pelo menos uma vez**: se o provedor receber a mensagem e a aplicação cair antes de registrar o sucesso, pode haver reenvio. O payload inclui `transferId` para permitir deduplicação pelo provedor; não há garantia de que o mock público a implemente. As tentativas continuam enquanto o serviço estiver indisponível, sem fila de falhas definitiva.
+As notificações têm entrega **pelo menos uma vez**: se o provedor receber a mensagem e a aplicação cair antes de registrar o sucesso, pode haver reenvio. O payload inclui `transferId` para permitir deduplicação pelo provedor; não há garantia de que o mock público a implemente. Após cinco falhas por padrão, o recibo fica `FAILED` e o agendador para de tentar.
 
-`POST /transfer` ainda não tem chave de idempotência. Se o cliente perder a resposta de uma transferência confirmada, reenviar a mesma requisição pode gerar outro pagamento. Idempotência e autenticação seriam as primeiras evoluções antes de qualquer uso real. Kafka, Redis e microsserviços não são necessários para demonstrar os fundamentos deste desafio.
+`Idempotency-Key` protege contra repetição acidental, mas não autentica o pagador nem autoriza acesso à carteira. A API continua sem autenticação e deve permanecer local; não é um serviço financeiro nem deve ser publicada. Kafka, Redis e microsserviços não são necessários para demonstrar os fundamentos deste desafio.

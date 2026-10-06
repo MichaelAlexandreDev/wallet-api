@@ -35,6 +35,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.web.client.ResourceAccessException;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -93,8 +94,7 @@ class WalletApiIT {
 
     @Test
     void transfersAndExposesAReadableReceipt() throws Exception {
-        var result = mvc.perform(post("/transfer").contentType(MediaType.APPLICATION_JSON)
-                        .content(json.writeValueAsString(request("25.10"))))
+        var result = mvc.perform(transferPost(request("25.10"), newIdempotencyKey()))
                 .andExpect(status().isCreated())
                 .andExpect(header().exists("Location"))
                 .andExpect(jsonPath("$.notificationStatus").value("PENDING"))
@@ -108,17 +108,136 @@ class WalletApiIT {
     }
 
     @Test
+    void requiresAnIdempotencyKey() throws Exception {
+        mvc.perform(post("/transfer").contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(request("10.00"))))
+                .andExpect(status().isBadRequest());
+
+        assertBalances("100.00", "0.00");
+        assertThat(transfers.count()).isZero();
+        verifyNoInteractions(authorization);
+    }
+
+    @Test
+    void rejectsBlankOrOverlongIdempotencyKeys() throws Exception {
+        mvc.perform(transferPost(request("10.00"), "   ")).andExpect(status().isBadRequest());
+        mvc.perform(transferPost(request("10.00"), "x".repeat(129))).andExpect(status().isBadRequest());
+
+        assertBalances("100.00", "0.00");
+        assertThat(transfers.count()).isZero();
+        verifyNoInteractions(authorization);
+    }
+
+    @Test
+    void replaysTheSameReceiptForNumericallyEquivalentAmounts() throws Exception {
+        String key = "k".repeat(128);
+        var first = mvc.perform(transferPost(request("10.0"), key))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.notificationStatus").value("PENDING"))
+                .andReturn();
+        String location = first.getResponse().getHeader("Location");
+        var originalReceipt = json.readTree(first.getResponse().getContentAsString());
+        String transferId = originalReceipt.get("id").asText();
+        String createdAt = originalReceipt.get("createdAt").asText();
+
+        mvc.perform(transferPost(request("10.00"), key))
+                .andExpect(status().isCreated())
+                .andExpect(header().string("Location", location))
+                .andExpect(jsonPath("$.id").value(transferId))
+                .andExpect(jsonPath("$.createdAt").value(createdAt))
+                .andExpect(jsonPath("$.value").value(10.0))
+                .andExpect(jsonPath("$.notificationStatus").value("PENDING"));
+
+        assertBalances("90.00", "10.00");
+        assertThat(transfers.count()).isEqualTo(1);
+        var storedTransfer = transfers.findByPayerIdAndIdempotencyKey(payer.getId(), key).orElseThrow();
+        assertThat(storedTransfer.getRequestFingerprint()).matches("[0-9a-f]{64}");
+        verify(authorization).authorize();
+    }
+
+    @Test
+    void rejectsReusingAnIdempotencyKeyWithDifferentPayload() throws Exception {
+        String key = "conflicting-key";
+        mvc.perform(transferPost(request("10.00"), key)).andExpect(status().isCreated());
+
+        mvc.perform(transferPost(request("20.00"), key)).andExpect(status().isConflict());
+
+        assertBalances("90.00", "10.00");
+        assertThat(transfers.count()).isEqualTo(1);
+        verify(authorization).authorize();
+    }
+
+    @Test
+    void scopesIdempotencyKeysByPayer() {
+        var otherPayer = createUser("33333333333", UserType.COMMON, "50.00");
+        String key = "shared-key";
+
+        var first = service.transfer(request("10.00"), key);
+        var second = service.transfer(new TransferRequest(new BigDecimal("10.00"), otherPayer.getId(), payee.getId()), key);
+
+        assertThat(second.id()).isNotEqualTo(first.id());
+        assertThat(transfers.count()).isEqualTo(2);
+        assertBalances("90.00", "20.00");
+        assertThat(balance(otherPayer)).isEqualByComparingTo("40.00");
+        verify(authorization, times(2)).authorize();
+    }
+
+    @Test
+    void concurrentRequestsWithTheSameKeyCreateOneTransfer() throws Exception {
+        String key = "concurrent-key";
+        var ready = new CountDownLatch(2);
+        var start = new CountDownLatch(1);
+        Callable<dev.starrk.wallet.transfer.TransferResponse> attempt = () -> {
+            ready.countDown();
+            if (!start.await(5, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("Concurrent test did not start");
+            }
+            return service.transfer(request("30.00"), key);
+        };
+
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            var first = executor.submit(attempt);
+            var second = executor.submit(attempt);
+            assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            var firstReceipt = first.get(15, TimeUnit.SECONDS);
+            var secondReceipt = second.get(15, TimeUnit.SECONDS);
+            assertThat(firstReceipt).isEqualTo(secondReceipt);
+        }
+
+        assertBalances("70.00", "30.00");
+        assertThat(transfers.count()).isEqualTo(1);
+        verify(authorization).authorize();
+    }
+
+    @Test
+    void authorizationFailureRollsBackTheKeySoItCanBeRetried() throws Exception {
+        String key = "retry-after-authorization-failure";
+        doThrow(new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "Autorizador indisponível"))
+                .doNothing().when(authorization).authorize();
+
+        mvc.perform(transferPost(request("30.00"), key)).andExpect(status().isServiceUnavailable());
+        assertBalances("100.00", "0.00");
+        assertThat(transfers.count()).isZero();
+
+        mvc.perform(transferPost(request("30.00"), key)).andExpect(status().isCreated());
+
+        assertBalances("70.00", "30.00");
+        assertThat(transfers.count()).isEqualTo(1);
+        verify(authorization, times(2)).authorize();
+    }
+
+    @Test
     void transfersBetweenCommonUsersAndAllowsExactBalance() {
         var other = createUser("33333333333", UserType.COMMON, "0.00");
-        service.transfer(new TransferRequest(new BigDecimal("100.00"), payer.getId(), other.getId()));
+        service.transfer(new TransferRequest(new BigDecimal("100.00"), payer.getId(), other.getId()), newIdempotencyKey());
         assertThat(balance(payer)).isZero();
         assertThat(balance(other)).isEqualByComparingTo("100.00");
     }
 
     @Test
     void rejectsMerchantAsPayer() throws Exception {
-        mvc.perform(post("/transfer").contentType(MediaType.APPLICATION_JSON)
-                        .content(json.writeValueAsString(new TransferRequest(BigDecimal.ONE, payee.getId(), payer.getId()))))
+        mvc.perform(transferPost(new TransferRequest(BigDecimal.ONE, payee.getId(), payer.getId()), newIdempotencyKey()))
                 .andExpect(status().isUnprocessableEntity());
         assertBalances("100.00", "0.00");
         assertThat(transfers.count()).isZero();
@@ -127,8 +246,7 @@ class WalletApiIT {
 
     @Test
     void rejectsInsufficientBalance() throws Exception {
-        mvc.perform(post("/transfer").contentType(MediaType.APPLICATION_JSON)
-                        .content(json.writeValueAsString(request("100.01"))))
+        mvc.perform(transferPost(request("100.01"), newIdempotencyKey()))
                 .andExpect(status().isUnprocessableEntity());
         assertBalances("100.00", "0.00");
         assertThat(transfers.count()).isZero();
@@ -137,8 +255,7 @@ class WalletApiIT {
 
     @Test
     void rejectsSelfTransfer() throws Exception {
-        mvc.perform(post("/transfer").contentType(MediaType.APPLICATION_JSON)
-                        .content(json.writeValueAsString(new TransferRequest(BigDecimal.ONE, payer.getId(), payer.getId()))))
+        mvc.perform(transferPost(new TransferRequest(BigDecimal.ONE, payer.getId(), payer.getId()), newIdempotencyKey()))
                 .andExpect(status().isUnprocessableEntity());
         assertBalances("100.00", "0.00");
         verifyNoInteractions(authorization);
@@ -146,8 +263,7 @@ class WalletApiIT {
 
     @Test
     void rejectsUnknownUser() throws Exception {
-        mvc.perform(post("/transfer").contentType(MediaType.APPLICATION_JSON)
-                        .content(json.writeValueAsString(new TransferRequest(BigDecimal.ONE, payer.getId(), Long.MAX_VALUE))))
+        mvc.perform(transferPost(new TransferRequest(BigDecimal.ONE, payer.getId(), Long.MAX_VALUE), newIdempotencyKey()))
                 .andExpect(status().isNotFound());
         assertBalances("100.00", "0.00");
         verifyNoInteractions(authorization);
@@ -158,8 +274,7 @@ class WalletApiIT {
     void rollsBackBothWalletsWhenAuthorizationFails(int statusCode) throws Exception {
         doThrow(new ApiException(HttpStatus.valueOf(statusCode), "Falha do autorizador"))
                 .when(authorization).authorize();
-        mvc.perform(post("/transfer").contentType(MediaType.APPLICATION_JSON)
-                        .content(json.writeValueAsString(request("50.00"))))
+        mvc.perform(transferPost(request("50.00"), newIdempotencyKey()))
                 .andExpect(status().is(statusCode));
         assertBalances("100.00", "0.00");
         assertThat(transfers.count()).isZero();
@@ -170,7 +285,7 @@ class WalletApiIT {
     @Test
     void rollsBackDebitWhenDestinationWouldOverflow() {
         jdbc.update("UPDATE users SET balance = 99999999999999999.99 WHERE id = ?", payee.getId());
-        assertThatThrownBy(() -> service.transfer(request("0.01"))).isInstanceOf(ApiException.class);
+        assertThatThrownBy(() -> service.transfer(request("0.01"), newIdempotencyKey())).isInstanceOf(ApiException.class);
         assertBalances("100.00", "99999999999999999.99");
         assertThat(transfers.count()).isZero();
         verifyNoInteractions(authorization);
@@ -179,8 +294,7 @@ class WalletApiIT {
     @ParameterizedTest
     @ValueSource(strings = {"0", "-1", "0.001", "100000000000000000.00", "null"})
     void rejectsInvalidMoneyAtTheHttpBoundary(String value) throws Exception {
-        mvc.perform(post("/transfer").contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"value\":" + value + ",\"payer\":" + payer.getId() + ",\"payee\":" + payee.getId() + "}"))
+        mvc.perform(transferPost("{\"value\":" + value + ",\"payer\":" + payer.getId() + ",\"payee\":" + payee.getId() + "}", newIdempotencyKey()))
                 .andExpect(status().isBadRequest())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON));
         assertBalances("100.00", "0.00");
@@ -191,7 +305,7 @@ class WalletApiIT {
     @ValueSource(strings = {"{}", "{", "{\"value\":1,\"payer\":1.5,\"payee\":2}",
             "{\"value\":1,\"payer\":-1,\"payee\":2}", "{\"value\":1,\"payer\":1,\"payee\":2,\"extra\":true}"})
     void rejectsMalformedOrIncompleteRequests(String body) throws Exception {
-        mvc.perform(post("/transfer").contentType(MediaType.APPLICATION_JSON).content(body))
+        mvc.perform(transferPost(body, newIdempotencyKey()))
                 .andExpect(status().isBadRequest());
         verifyNoInteractions(authorization);
     }
@@ -206,7 +320,7 @@ class WalletApiIT {
                 throw new IllegalStateException("Concurrent test did not start");
             }
             try {
-                service.transfer(request("80.00"));
+                service.transfer(request("80.00"), newIdempotencyKey());
                 return true;
             } catch (ApiException exception) {
                 assertThat(exception.getStatus()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
@@ -233,11 +347,11 @@ class WalletApiIT {
         try (var executor = Executors.newFixedThreadPool(2)) {
             var first = executor.submit(() -> {
                 start.await();
-                return service.transfer(new TransferRequest(new BigDecimal("10.00"), payer.getId(), other.getId()));
+                return service.transfer(new TransferRequest(new BigDecimal("10.00"), payer.getId(), other.getId()), newIdempotencyKey());
             });
             var second = executor.submit(() -> {
                 start.await();
-                return service.transfer(new TransferRequest(new BigDecimal("20.00"), other.getId(), payer.getId()));
+                return service.transfer(new TransferRequest(new BigDecimal("20.00"), other.getId(), payer.getId()), newIdempotencyKey());
             });
             start.countDown();
             assertThat(first.get(15, TimeUnit.SECONDS)).isNotNull();
@@ -250,12 +364,13 @@ class WalletApiIT {
 
     @Test
     void retriesNotificationsWithoutRepeatingThePayment() {
-        var receipt = service.transfer(request("30.00"));
+        var receipt = service.transfer(request("30.00"), newIdempotencyKey());
         doThrow(new ResourceAccessException("timeout")).when(notification).send(any(), anyString());
         assertThat(notifications.deliverNext()).isTrue();
         var pending = transfers.findById(receipt.id()).orElseThrow();
         assertThat(pending.getNotifiedAt()).isNull();
         assertThat(pending.getNotificationAttempts()).isEqualTo(1);
+        assertThat(pending.getNotificationStatus().name()).isEqualTo("PENDING");
         assertThat(pending.getNextNotificationAt()).isAfter(pending.getCreatedAt());
         assertThat(notifications.deliverNext()).isFalse();
         assertBalances("70.00", "30.00");
@@ -266,11 +381,43 @@ class WalletApiIT {
         var delivered = transfers.findById(receipt.id()).orElseThrow();
         assertThat(delivered.getNotifiedAt()).isNotNull();
         assertThat(delivered.getNotificationAttempts()).isEqualTo(2);
+        assertThat(delivered.getNotificationStatus().name()).isEqualTo("SENT");
         assertThat(service.find(receipt.id()).notificationStatus()).isEqualTo("SENT");
         assertThat(notifications.deliverNext()).isFalse();
         assertBalances("70.00", "30.00");
         assertThat(transfers.count()).isEqualTo(1);
         verify(notification, times(2)).send(any(), anyString());
+    }
+
+    @Test
+    void marksNotificationFailedAfterMaximumAttemptsWithoutRepeatingTransfer() throws Exception {
+        var receipt = service.transfer(request("30.00"), newIdempotencyKey());
+        doThrow(new ResourceAccessException("timeout")).when(notification).send(any(), anyString());
+
+        for (int attempt = 1; attempt <= 5; attempt++) {
+            if (attempt > 1) {
+                jdbc.update("UPDATE transfers SET next_notification_at = CURRENT_TIMESTAMP WHERE id = ?", receipt.id());
+            }
+            assertThat(notifications.deliverNext()).isTrue();
+            var saved = transfers.findById(receipt.id()).orElseThrow();
+            assertThat(saved.getNotificationAttempts()).isEqualTo(attempt);
+            if (attempt < 5) {
+                assertThat(saved.getNotificationStatus().name()).isEqualTo("PENDING");
+            }
+        }
+
+        var failed = transfers.findById(receipt.id()).orElseThrow();
+        assertThat(failed.getNotificationStatus().name()).isEqualTo("FAILED");
+        assertThat(failed.getNotifiedAt()).isNull();
+        assertThat(jdbc.queryForObject("SELECT notification_status FROM transfers WHERE id = ?", String.class,
+                receipt.id())).isEqualTo("FAILED");
+        mvc.perform(get("/transfer/{id}", receipt.id()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.notificationStatus").value("FAILED"));
+        assertThat(notifications.deliverNext()).isFalse();
+        assertBalances("70.00", "30.00");
+        assertThat(transfers.count()).isEqualTo(1);
+        verify(notification, times(5)).send(any(), anyString());
     }
 
     @Test
@@ -339,6 +486,19 @@ class WalletApiIT {
 
     private TransferRequest request(String value) {
         return new TransferRequest(new BigDecimal(value), payer.getId(), payee.getId());
+    }
+
+    private MockHttpServletRequestBuilder transferPost(TransferRequest request, String idempotencyKey) throws Exception {
+        return transferPost(json.writeValueAsString(request), idempotencyKey);
+    }
+
+    private MockHttpServletRequestBuilder transferPost(String body, String idempotencyKey) {
+        return post("/transfer").header("Idempotency-Key", idempotencyKey)
+                .contentType(MediaType.APPLICATION_JSON).content(body);
+    }
+
+    private String newIdempotencyKey() {
+        return UUID.randomUUID().toString();
     }
 
     private BigDecimal balance(User user) {

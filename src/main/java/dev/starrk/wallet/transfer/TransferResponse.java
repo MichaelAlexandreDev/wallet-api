@@ -9,6 +9,6 @@ public record TransferResponse(UUID id, BigDecimal value, Long payer, Long payee
     public static TransferResponse from(Transfer transfer) {
         return new TransferResponse(transfer.getId(), transfer.getAmount(), transfer.getPayerId(),
                 transfer.getPayeeId(), transfer.getCreatedAt(),
-                transfer.getNotifiedAt() == null ? "PENDING" : "SENT");
+                transfer.getNotificationStatus().name());
     }
 }

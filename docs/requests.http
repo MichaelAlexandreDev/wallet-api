@@ -36,6 +36,7 @@ Content-Type: application/json
 ### Transferir
 POST {{baseUrl}}/transfer
 Content-Type: application/json
+Idempotency-Key: demo-transfer-success-001
 
 {"value": 25.00, "payer": {{payer}}, "payee": {{payee}}}
 
@@ -48,12 +49,14 @@ GET {{baseUrl}}/users/{{payee}}
 ### Lojista não pode pagar (422)
 POST {{baseUrl}}/transfer
 Content-Type: application/json
+Idempotency-Key: demo-transfer-merchant-001
 
 {"value": 1.00, "payer": {{payee}}, "payee": {{payer}}}
 
 ### Saldo insuficiente (422)
 POST {{baseUrl}}/transfer
 Content-Type: application/json
+Idempotency-Key: demo-transfer-insufficient-001
 
 {"value": 1000.00, "payer": {{payer}}, "payee": {{payee}}}
 

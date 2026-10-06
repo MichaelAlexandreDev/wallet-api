@@ -26,6 +26,7 @@ notifications:
   enabled: true
   poll-delay-ms: 10000
   retry-delay-seconds: 60
+  max-attempts: ${NOTIFICATION_MAX_ATTEMPTS:5}
 
 management:
   endpoints:

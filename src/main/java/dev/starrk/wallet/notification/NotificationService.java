@@ -19,13 +19,19 @@ public class NotificationService {
     private final UserRepository users;
     private final NotificationClient client;
     private final long retryDelaySeconds;
+    private final int maxAttempts;
 
     public NotificationService(TransferRepository transfers, UserRepository users, NotificationClient client,
-            @Value("${notifications.retry-delay-seconds}") long retryDelaySeconds) {
+            @Value("${notifications.retry-delay-seconds}") long retryDelaySeconds,
+            @Value("${notifications.max-attempts}") int maxAttempts) {
+        if (maxAttempts < 1) {
+            throw new IllegalArgumentException("notifications.max-attempts deve ser pelo menos 1");
+        }
         this.transfers = transfers;
         this.users = users;
         this.client = client;
         this.retryDelaySeconds = retryDelaySeconds;
+        this.maxAttempts = maxAttempts;
     }
 
     @Transactional
@@ -44,7 +50,7 @@ public class NotificationService {
             log.warn("Notificação pendente: transferId={}, tentativa={}",
                     transfer.getId(), transfer.getNotificationAttempts() + 1);
         }
-        transfer.recordNotificationAttempt(delivered, Instant.now(), retryDelaySeconds);
+        transfer.recordNotificationAttempt(delivered, Instant.now(), retryDelaySeconds, maxAttempts);
         return true;
     }
 }

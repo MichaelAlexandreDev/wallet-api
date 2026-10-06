@@ -26,6 +26,7 @@ services:
       SPRING_PROFILES_ACTIVE: demo
       AUTHORIZATION_URL: ${AUTHORIZATION_URL:-https://util.devi.tools/api/v2/authorize}
       NOTIFICATION_URL: ${NOTIFICATION_URL:-https://util.devi.tools/api/v1/notify}
+      NOTIFICATION_MAX_ATTEMPTS: ${NOTIFICATION_MAX_ATTEMPTS:-5}
     depends_on:
       db:
         condition: service_healthy
