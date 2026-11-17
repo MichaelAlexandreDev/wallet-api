@@ -27,6 +27,26 @@ Content-Type: application/json
   "type": "MERCHANT"
 }
 
+### Entrar como pagador
+# @name login
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{"email": "ana@example.com", "password": "senha-de-exemplo"}
+
+### Consultar a própria conta (exige token)
+GET {{baseUrl}}/users/me
+Authorization: Bearer {{login.response.body.accessToken}}
+
+### Sem token (401)
+GET {{baseUrl}}/users/me
+
+### Senha errada (401, mesma resposta de e-mail inexistente)
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{"email": "ana@example.com", "password": "senha-errada-123"}
+
 ### Adicionar saldo de demonstração (perfil demo)
 POST {{baseUrl}}/users/{{payer}}/deposits
 Content-Type: application/json

@@ -4,6 +4,8 @@ import java.net.URI;
 
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -24,6 +26,11 @@ public class UserController {
     ResponseEntity<UserResponse> create(@Valid @RequestBody CreateUserRequest request) {
         var user = service.create(request);
         return ResponseEntity.created(URI.create("/users/" + user.id())).body(user);
+    }
+
+    @GetMapping("/me")
+    UserResponse me(@AuthenticationPrincipal Jwt token) {
+        return service.find(Long.valueOf(token.getSubject()));
     }
 
     @GetMapping("/{id}")

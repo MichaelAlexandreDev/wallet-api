@@ -55,7 +55,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@SpringBootTest(properties = "notifications.enabled=false")
+@SpringBootTest(properties = {"notifications.enabled=false", "security.jwt.secret=" + TestSecrets.JWT_SECRET})
 @AutoConfigureMockMvc
 @ActiveProfiles("demo")
 @Testcontainers
