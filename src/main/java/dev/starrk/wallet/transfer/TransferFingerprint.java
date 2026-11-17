@@ -9,9 +9,10 @@ final class TransferFingerprint {
     private TransferFingerprint() {
     }
 
-    static String from(TransferRequest request) {
+    static String from(long payerId, TransferRequest request) {
         var canonicalAmount = request.value().stripTrailingZeros().toPlainString();
-        var canonicalRequest = request.payer() + ":" + request.payee() + ":" + canonicalAmount;
+        // Mesmo formato de antes da autenticação, para que chaves já gravadas continuem válidas.
+        var canonicalRequest = payerId + ":" + request.payee() + ":" + canonicalAmount;
         try {
             var digest = MessageDigest.getInstance("SHA-256")
                     .digest(canonicalRequest.getBytes(StandardCharsets.UTF_8));

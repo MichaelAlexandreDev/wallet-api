@@ -35,6 +35,8 @@ import org.springframework.security.web.SecurityFilterChain;
 @EnableConfigurationProperties(JwtProperties.class)
 public class SecurityConfiguration {
     private static final Duration CLOCK_SKEW = Duration.ofSeconds(30);
+    private static final String WALLET_READ = "SCOPE_wallet:read";
+    private static final String TRANSFER_WRITE = "SCOPE_transfer:write";
 
     @Bean
     SecurityFilterChain apiSecurity(HttpSecurity http, ObjectMapper json) throws Exception {
@@ -48,9 +50,12 @@ public class SecurityConfiguration {
                 .logout(logout -> logout.disable())
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.POST, "/auth/login", "/users").permitAll()
-                        .requestMatchers("/users/me").authenticated()
-                        // Transição: as demais rotas continuam abertas até a etapa de controle de acesso por dono.
-                        .anyRequest().permitAll())
+                        .requestMatchers(HttpMethod.GET, "/actuator/health").permitAll()
+                        .requestMatchers("/error").permitAll()
+                        // Escopos limitam o que o token pode fazer; a posse da carteira é verificada nos services.
+                        .requestMatchers(HttpMethod.POST, "/transfer", "/users/*/deposits").hasAuthority(TRANSFER_WRITE)
+                        .requestMatchers(HttpMethod.GET, "/users/**", "/transfer/**").hasAuthority(WALLET_READ)
+                        .anyRequest().authenticated())
                 .oauth2ResourceServer(server -> server
                         .jwt(Customizer.withDefaults())
                         .authenticationEntryPoint(problems)
@@ -83,7 +88,8 @@ public class SecurityConfiguration {
                 new JwtIssuerValidator(properties.issuer()),
                 // O validador de datas aceita tokens sem "exp"; aqui eles são recusados.
                 new JwtClaimValidator<Instant>(JwtClaimNames.EXP, Objects::nonNull),
-                new JwtClaimValidator<String>(JwtClaimNames.SUB, subject -> subject != null && !subject.isBlank())));
+                new JwtClaimValidator<String>(JwtClaimNames.SUB,
+                        subject -> subject != null && subject.matches(AuthenticatedUser.SUBJECT_PATTERN))));
         return decoder;
     }
 

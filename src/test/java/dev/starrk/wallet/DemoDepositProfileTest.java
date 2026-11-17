@@ -1,13 +1,18 @@
 package dev.starrk.wallet;
 
+import java.time.Clock;
+
 import dev.starrk.wallet.auth.AuthService;
+import dev.starrk.wallet.auth.JwtProperties;
 import dev.starrk.wallet.auth.SecurityConfiguration;
+import dev.starrk.wallet.auth.TokenService;
 import dev.starrk.wallet.transfer.TransferService;
 import dev.starrk.wallet.user.UserService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.security.oauth2.jwt.JwtEncoder;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -30,9 +35,18 @@ class DemoDepositProfileTest {
     @MockitoBean
     private AuthService auth;
 
+    @Autowired
+    private JwtEncoder encoder;
+
+    @Autowired
+    private JwtProperties properties;
+
     @Test
     void demoDepositEndpointIsNotRegisteredWithoutDemoProfile() throws Exception {
+        String token = new TokenService(encoder, properties, Clock.systemUTC()).issue(1).value();
+
         mvc.perform(post("/users/{id}/deposits", 1)
+                        .header("Authorization", "Bearer " + token)
                         .contentType("application/json")
                         .content("{\"value\":50.00}"))
                 .andExpect(status().isNotFound());

@@ -2,6 +2,7 @@ package dev.starrk.wallet.user;
 
 import java.net.URI;
 
+import dev.starrk.wallet.auth.AuthenticatedUser;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -30,11 +31,11 @@ public class UserController {
 
     @GetMapping("/me")
     UserResponse me(@AuthenticationPrincipal Jwt token) {
-        return service.find(Long.valueOf(token.getSubject()));
+        return service.find(AuthenticatedUser.id(token));
     }
 
     @GetMapping("/{id}")
-    UserResponse find(@PathVariable Long id) {
-        return service.find(id);
+    UserResponse find(@AuthenticationPrincipal Jwt token, @PathVariable Long id) {
+        return service.findOwned(id, AuthenticatedUser.id(token));
     }
 }

@@ -67,26 +67,30 @@ TOKEN='cole-o-accessToken-aqui'
 curl http://localhost:8081/users/me -H "Authorization: Bearer $TOKEN"
 ```
 
-Nesta fase, apenas `/users/me` exige token. A próxima etapa passa a exigir autenticação nas carteiras e transferências, com cada usuário restrito aos próprios dados.
+Todas as rotas de carteira e transferência exigem o cabeçalho `Authorization: Bearer`. Cada usuário só consulta e movimenta a própria carteira.
 
 ### 3. Adicionar saldo de demonstração
 
 ```bash
 curl -X POST http://localhost:8081/users/1/deposits \
+  -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"value":100.00}'
 ```
 
-Esse endpoint existe apenas com o perfil `demo`, ativado pelo Compose. Ele simula a entrada de dinheiro; não representa integração com um banco ou processador de pagamentos.
+Esse endpoint existe apenas com o perfil `demo`, ativado pelo Compose, e só aceita depósito na carteira do próprio token. Ele simula a entrada de dinheiro; não representa integração com um banco ou processador de pagamentos.
 
 ### 4. Transferir
 
 ```bash
 curl -i -X POST http://localhost:8081/transfer \
+  -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: demo-transfer-001' \
-  -d '{"value":25.00,"payer":1,"payee":2}'
+  -d '{"value":25.00,"payee":2}'
 ```
+
+O pagador é sempre o usuário do token. O corpo não aceita o campo `payer` do contrato original do desafio: se a API confiasse nele, qualquer pessoa autenticada poderia gastar o saldo de outra informando o ID dela.
 
 Resposta `201 Created`:
 
@@ -104,11 +108,10 @@ Resposta `201 Created`:
 O ID e a data são gerados pela aplicação. A transferência já está confirmada quando a API responde; `PENDING` descreve apenas a notificação. Consulte o endereço do cabeçalho `Location` para acompanhar a mudança para `SENT` ou `FAILED`. Reenvie a mesma operação com a mesma chave em caso de timeout; use uma chave nova para cada transferência diferente.
 
 ```bash
-curl http://localhost:8081/users/1
-curl http://localhost:8081/users/2
+curl http://localhost:8081/users/me -H "Authorization: Bearer $TOKEN"
 ```
 
-Os saldos devem ser `75.00` e `25.00`. Há mais exemplos em [docs/requests.http](docs/requests.http), compatível com IntelliJ HTTP Client e a extensão REST Client do VS Code.
+O saldo da Ana deve ser `75.00`. Para ver o da loja (`25.00`), entre com `loja@example.com` e consulte `/users/me` com o token dela. Há mais exemplos em [docs/requests.http](docs/requests.http), compatível com IntelliJ HTTP Client e a extensão REST Client do VS Code.
 
 ## Endpoints
 
@@ -116,11 +119,13 @@ Os saldos devem ser `75.00` e `25.00`. Há mais exemplos em [docs/requests.http]
 | --- | --- | --- |
 | POST | `/users` | Cadastra usuário comum (`COMMON`) ou lojista (`MERCHANT`) |
 | POST | `/auth/login` | Troca e-mail e senha por um token JWT com expiração |
-| GET | `/users/me` | Consulta o usuário do token e seu saldo; exige `Authorization: Bearer` |
-| GET | `/users/{id}` | Consulta usuário e saldo |
-| POST | `/users/{id}/deposits` | Adiciona saldo fictício; somente no perfil `demo` |
-| POST | `/transfer` | Transfere conforme o contrato do desafio; exige `Idempotency-Key` |
-| GET | `/transfer/{id}` | Consulta comprovante e situação da notificação |
+| GET | `/users/me` | Consulta o usuário do token e seu saldo |
+| GET | `/users/{id}` | Consulta usuário e saldo; só o próprio ID |
+| POST | `/users/{id}/deposits` | Adiciona saldo fictício na própria carteira; somente no perfil `demo` |
+| POST | `/transfer` | Transfere do usuário do token para `payee`; exige `Idempotency-Key` |
+| GET | `/transfer/{id}` | Consulta comprovante e situação da notificação; só pagador ou recebedor |
+
+Exceto cadastro, login e health check, todas as rotas exigem `Authorization: Bearer <token>`. Consultas exigem o escopo `wallet:read`; transferências e depósitos exigem `transfer:write`. O login emite tokens com os dois.
 | GET | `/actuator/health` | Verifica a saúde da aplicação e do banco |
 
 Valores monetários devem ser positivos, com até 17 dígitos inteiros e duas casas decimais. O documento deve ter 11 ou 14 dígitos, sem pontuação. O e-mail é normalizado para minúsculas. Senhas têm de 8 a 64 caracteres e no máximo 72 bytes em UTF-8, limite do BCrypt utilizado.
@@ -133,8 +138,8 @@ As respostas de erro seguem `application/problem+json`, com `status`, `title` e 
 | --- | --- |
 | 400 | JSON inválido, campos ausentes, valores fora do formato ou `Idempotency-Key` ausente/inválida |
 | 401 | E-mail ou senha inválidos no login; token ausente, expirado, adulterado ou de outro emissor |
-| 403 | Autorizador recusou a transferência |
-| 404 | Usuário ou transferência não encontrado |
+| 403 | Token sem o escopo necessário, ou autorizador externo recusou a transferência |
+| 404 | Usuário ou transferência não encontrado, ou pertencente a outra pessoa |
 | 409 | CPF/CNPJ ou e-mail já cadastrado, conflito com restrição do banco ou reutilização de chave com outro payload |
 | 422 | Saldo insuficiente, lojista como pagador, mesma origem/destino ou limite de saldo |
 | 503 | Autorizador indisponível ou tempo de espera pelo bloqueio da carteira excedido |
@@ -161,6 +166,8 @@ Os pacotes são organizados por funcionalidade: `auth`, `user`, `transfer`, `int
 - **Serviços externos:** `RestClient` com timeout de conexão de 2 segundos e leitura de 3 segundos. Autorização exige resposta explícita de sucesso; respostas inesperadas resultam em `503`.
 - **Notificação:** o comprovante nasce com notificação pendente na mesma transação do pagamento. Um agendador consulta até dez pendências a cada ciclo, com intervalo de dez segundos após o ciclo anterior. Falhas são reagendadas para depois de 60 segundos, até cinco tentativas por padrão, e sobrevivem a reinícios. O estado `FAILED` encerra novas tentativas automáticas; `NOTIFICATION_MAX_ATTEMPTS` altera o limite. `FOR UPDATE SKIP LOCKED` impede dois workers de processarem simultaneamente o mesmo registro.
 - **Autenticação:** Spring Security como resource server. `POST /auth/login` emite um JWT HS256 com `sub` (ID do usuário), `iss`, `iat`, `exp` (15 minutos) e `scope`. O segredo vem de `JWT_SECRET`, tem no mínimo 32 bytes e a aplicação não sobe sem ele. Tokens sem `exp`, sem assinatura (`alg: none`), assinados com outra chave ou de outro emissor são recusados. A API não usa sessão nem cookies, por isso o CSRF fica desligado.
+- **Posse da carteira:** a identidade vem só do `sub` do token. O pagador da transferência não vem do corpo, e consultas ou depósitos em IDs de outra pessoa devolvem `404`, a mesma resposta de um ID inexistente, para não revelar quais usuários ou comprovantes existem. Comprovantes são visíveis ao pagador e ao recebedor. A chave de idempotência continua separada por pagador, então reutilizar a chave de outra pessoa cria uma transferência nova em vez de devolver o recibo dela.
+- **Escopos:** o token leva `scope`, e as rotas exigem `wallet:read` ou `transfer:write`. Um token só de leitura (por exemplo, para um agente de IA) consulta saldos, mas recebe `403` ao tentar mover dinheiro.
 - **Login sem enumeração:** e-mail inexistente e senha errada devolvem a mesma resposta `401`. Quando o e-mail não existe, o BCrypt roda contra um hash fictício para que o tempo de resposta também não revele o cadastro.
 - **Segurança básica:** senha armazenada como hash BCrypt, DTOs sem exposição de entidades e contêiner da aplicação executado sem root.
 
@@ -178,7 +185,7 @@ Pré-requisitos para executar fora de contêiner: JDK 21 e Docker acessível pel
 
 No Windows, use `mvnw.cmd`. Os testes de integração são executados pelo Maven Failsafe (`*IT`) e falham se o Docker não estiver disponível; não são pulados silenciosamente.
 
-Os testes cobrem regras de saldo, precisão decimal, validação HTTP, unicidade e hashing, login e validação de tokens (expirado, adulterado, sem assinatura, sem expiração e de outro emissor), transferência entre usuários e para lojistas, rollback, gasto duplo, transferências em sentidos opostos, replay idempotente, chaves conflitantes, concorrência com a mesma chave, limite de retentativas e disponibilidade do depósito demo por perfil. Os clientes HTTP são exercitados contra um servidor local, incluindo timeout, recusa, resposta inválida e indisponibilidade. Os testes da aplicação usam PostgreSQL real e Mockito para controlar os serviços externos, sem depender da disponibilidade dos mocks públicos.
+Os testes cobrem regras de saldo, precisão decimal, validação HTTP, unicidade e hashing, login e validação de tokens (expirado, adulterado, sem assinatura, sem expiração e de outro emissor), isolamento entre carteiras (tentativa de gastar saldo alheio, leitura de usuário e comprovante de terceiros, depósito em outra carteira, reutilização da chave de idempotência de outra pessoa) e escopos, transferência entre usuários e para lojistas, rollback, gasto duplo, transferências em sentidos opostos, replay idempotente, chaves conflitantes, concorrência com a mesma chave, limite de retentativas e disponibilidade do depósito demo por perfil. Os clientes HTTP são exercitados contra um servidor local, incluindo timeout, recusa, resposta inválida e indisponibilidade. Os testes da aplicação usam PostgreSQL real e Mockito para controlar os serviços externos, sem depender da disponibilidade dos mocks públicos.
 
 ## Desenvolvimento local e serviços oficiais
 
@@ -218,10 +225,10 @@ O banco usa a porta `5433` no host para coexistir com instalações locais na po
 
 ## Limites e próximos passos
 
-Este projeto prioriza o fluxo pedido no desafio. O login com JWT já existe, mas as transferências e consultas por ID ainda não exigem token; essa restrição é a próxima etapa. Até lá, a API deve permanecer local e não deve ser publicada como serviço financeiro. Não há refresh token nem limite de tentativas de login. Frontend está fora do escopo. A validação de documento confere formato e unicidade, sem cálculo de dígitos verificadores.
+Este projeto prioriza o fluxo pedido no desafio. A autenticação cobre o essencial para uma API de estudo, mas não há refresh token, revogação de tokens, limite de tentativas de login nem verificação de e-mail. A API não deve ser publicada como serviço financeiro. Frontend está fora do escopo. A validação de documento confere formato e unicidade, sem cálculo de dígitos verificadores.
 
 A autorização externa ocorre enquanto as carteiras estão bloqueadas. Os timeouts limitam a espera, mas esse desenho reduz o throughput de carteiras muito movimentadas. É uma escolha simples para este porte.
 
 As notificações têm entrega **pelo menos uma vez**: se o provedor receber a mensagem e a aplicação cair antes de registrar o sucesso, pode haver reenvio. O payload inclui `transferId` para permitir deduplicação pelo provedor; não há garantia de que o mock público a implemente. Após cinco falhas por padrão, o recibo fica `FAILED` e o agendador para de tentar.
 
-`Idempotency-Key` protege contra repetição acidental, mas não autentica o pagador nem autoriza acesso à carteira. Enquanto a transferência não exigir token, a API deve permanecer local; não é um serviço financeiro nem deve ser publicada. Kafka, Redis e microsserviços não são necessários para demonstrar os fundamentos deste desafio.
+`Idempotency-Key` protege contra repetição acidental; quem autentica o pagador é o token. Kafka, Redis e microsserviços não são necessários para demonstrar os fundamentos deste desafio.
