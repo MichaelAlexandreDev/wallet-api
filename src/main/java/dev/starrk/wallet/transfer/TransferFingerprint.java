@@ -13,6 +13,10 @@ final class TransferFingerprint {
         var canonicalAmount = request.value().stripTrailingZeros().toPlainString();
         // Mesmo formato de antes da autenticação, para que chaves já gravadas continuem válidas.
         var canonicalRequest = payerId + ":" + request.payee() + ":" + canonicalAmount;
+        if (request.description() != null) {
+            // Só entra quando existe, para não invalidar chaves gravadas antes do campo.
+            canonicalRequest += ":" + request.description();
+        }
         try {
             var digest = MessageDigest.getInstance("SHA-256")
                     .digest(canonicalRequest.getBytes(StandardCharsets.UTF_8));

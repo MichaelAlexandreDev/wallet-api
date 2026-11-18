@@ -182,6 +182,26 @@ class AccessControlIT {
     }
 
     @Test
+    void statementListsOnlyTheUsersOwnTransfersNewestFirst() throws Exception {
+        mvc.perform(transferAs(ana, store.getId(), "10.00")).andExpect(status().isCreated());
+        mvc.perform(transferAs(bia, store.getId(), "5.00")).andExpect(status().isCreated());
+        mvc.perform(transferAs(bia, ana.getId(), "7.00")).andExpect(status().isCreated());
+
+        mvc.perform(get("/users/me/transfers").header(HttpHeaders.AUTHORIZATION, bearer(ana)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(2))
+                .andExpect(jsonPath("$[0].value").value(7.0))
+                .andExpect(jsonPath("$[0].payer").value(bia.getId()))
+                .andExpect(jsonPath("$[1].value").value(10.0));
+        mvc.perform(get("/users/me/transfers").param("limit", "1").header(HttpHeaders.AUTHORIZATION, bearer(store)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1));
+        mvc.perform(get("/users/me/transfers").param("limit", "51").header(HttpHeaders.AUTHORIZATION, bearer(ana)))
+                .andExpect(status().isBadRequest());
+        mvc.perform(get("/users/me/transfers")).andExpect(status().isUnauthorized());
+    }
+
+    @Test
     void cannotDepositIntoAnotherWallet() throws Exception {
         mvc.perform(post("/users/{id}/deposits", bia.getId()).header(HttpHeaders.AUTHORIZATION, bearer(ana))
                         .contentType(MediaType.APPLICATION_JSON).content("{\"value\":10.00}"))

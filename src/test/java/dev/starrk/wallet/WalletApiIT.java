@@ -160,6 +160,53 @@ class WalletApiIT {
     }
 
     @Test
+    void storesTheOptionalDescriptionOnTheReceipt() throws Exception {
+        var created = mvc.perform(transferPost(new TransferRequest(new BigDecimal("12.00"), payee.getId(),
+                        "Almoço de sexta"), newIdempotencyKey()))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.description").value("Almoço de sexta"))
+                .andReturn();
+
+        mvc.perform(get(created.getResponse().getHeader("Location")).header(HttpHeaders.AUTHORIZATION, bearer(payee)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.description").value("Almoço de sexta"));
+        mvc.perform(transferPost(request("1.00"), newIdempotencyKey()))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.description").isEmpty());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", "   ", "linha 1\nlinha 2", "tab\there", "bell\u0007"})
+    void rejectsBlankOrControlCharacterDescriptions(String description) throws Exception {
+        mvc.perform(transferPost(new TransferRequest(BigDecimal.ONE, payee.getId(), description), newIdempotencyKey()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errors[0].field").value("description"));
+        assertBalances("100.00", "0.00");
+        verifyNoInteractions(authorization);
+    }
+
+    @Test
+    void rejectsDescriptionsLongerThan140Characters() throws Exception {
+        mvc.perform(transferPost(new TransferRequest(BigDecimal.ONE, payee.getId(), "x".repeat(141)), newIdempotencyKey()))
+                .andExpect(status().isBadRequest());
+        mvc.perform(transferPost(new TransferRequest(BigDecimal.ONE, payee.getId(), "x".repeat(140)), newIdempotencyKey()))
+                .andExpect(status().isCreated());
+    }
+
+    @Test
+    void reusingAKeyWithAnotherDescriptionIsAConflict() throws Exception {
+        String key = "description-key";
+        mvc.perform(transferPost(new TransferRequest(BigDecimal.TEN, payee.getId(), "Aluguel"), key))
+                .andExpect(status().isCreated());
+
+        mvc.perform(transferPost(new TransferRequest(BigDecimal.TEN, payee.getId(), "Outra coisa"), key))
+                .andExpect(status().isConflict());
+        mvc.perform(transferPost(new TransferRequest(BigDecimal.TEN, payee.getId(), "Aluguel"), key))
+                .andExpect(status().isCreated());
+        assertBalances("90.00", "10.00");
+    }
+
+    @Test
     void rejectsReusingAnIdempotencyKeyWithDifferentPayload() throws Exception {
         String key = "conflicting-key";
         mvc.perform(transferPost(request("10.00"), key)).andExpect(status().isCreated());

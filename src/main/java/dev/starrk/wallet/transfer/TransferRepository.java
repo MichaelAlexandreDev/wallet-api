@@ -1,13 +1,22 @@
 package dev.starrk.wallet.transfer;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 
 public interface TransferRepository extends JpaRepository<Transfer, UUID> {
     Optional<Transfer> findByPayerIdAndIdempotencyKey(Long payerId, String idempotencyKey);
+
+    @Query("""
+            select t from Transfer t
+            where t.payerId = :userId or t.payeeId = :userId
+            order by t.createdAt desc, t.id
+            """)
+    List<Transfer> findStatement(long userId, Pageable pageable);
 
     @Query(value = """
             SELECT * FROM transfers

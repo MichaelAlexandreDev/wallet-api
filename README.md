@@ -120,15 +120,16 @@ O saldo da Ana deve ser `75.00`. Para ver o da loja (`25.00`), entre com `loja@e
 | POST | `/users` | Cadastra usuário comum (`COMMON`) ou lojista (`MERCHANT`) |
 | POST | `/auth/login` | Troca e-mail e senha por um token JWT com expiração |
 | GET | `/users/me` | Consulta o usuário do token e seu saldo |
+| GET | `/users/me/transfers?limit=20` | Extrato: transferências enviadas e recebidas, das mais recentes para as mais antigas (limite de 1 a 50) |
 | GET | `/users/{id}` | Consulta usuário e saldo; só o próprio ID |
 | POST | `/users/{id}/deposits` | Adiciona saldo fictício na própria carteira; somente no perfil `demo` |
-| POST | `/transfer` | Transfere do usuário do token para `payee`; exige `Idempotency-Key` |
+| POST | `/transfer` | Transfere do usuário do token para `payee`, com `description` opcional; exige `Idempotency-Key` |
 | GET | `/transfer/{id}` | Consulta comprovante e situação da notificação; só pagador ou recebedor |
 
 Exceto cadastro, login e health check, todas as rotas exigem `Authorization: Bearer <token>`. Consultas exigem o escopo `wallet:read`; transferências e depósitos exigem `transfer:write`. O login emite tokens com os dois.
 | GET | `/actuator/health` | Verifica a saúde da aplicação e do banco |
 
-Valores monetários devem ser positivos, com até 17 dígitos inteiros e duas casas decimais. O documento deve ter 11 ou 14 dígitos, sem pontuação. O e-mail é normalizado para minúsculas. Senhas têm de 8 a 64 caracteres e no máximo 72 bytes em UTF-8, limite do BCrypt utilizado.
+Valores monetários devem ser positivos, com até 17 dígitos inteiros e duas casas decimais. A `description` da transferência é opcional, com até 140 caracteres, sem quebras de linha nem outros caracteres de controle. O documento deve ter 11 ou 14 dígitos, sem pontuação. O e-mail é normalizado para minúsculas. Senhas têm de 8 a 64 caracteres e no máximo 72 bytes em UTF-8, limite do BCrypt utilizado.
 
 ### Erros
 
