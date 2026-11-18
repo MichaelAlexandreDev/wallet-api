@@ -35,7 +35,7 @@ public class TransferService {
         }
 
         if (request.payee().equals(payerId)) {
-            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "Origem e destino devem ser diferentes.");
+            throw new ApiException(HttpStatus.UNPROCESSABLE_CONTENT, "Origem e destino devem ser diferentes.");
         }
 
         // A ordem fixa de aquisição dos locks evita deadlocks entre transferências opostas.
@@ -51,7 +51,7 @@ public class TransferService {
         }
 
         if (payer.getType() == UserType.MERCHANT) {
-            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "Lojistas não podem enviar transferências.");
+            throw new ApiException(HttpStatus.UNPROCESSABLE_CONTENT, "Lojistas não podem enviar transferências.");
         }
 
         payer.getWallet().debit(amount);

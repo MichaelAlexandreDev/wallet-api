@@ -21,7 +21,7 @@ public class Wallet {
     public void debit(BigDecimal amount) {
         validateAmount(amount);
         if (balance.compareTo(amount) < 0) {
-            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "Saldo insuficiente.");
+            throw new ApiException(HttpStatus.UNPROCESSABLE_CONTENT, "Saldo insuficiente.");
         }
         balance = balance.subtract(amount);
     }
@@ -29,14 +29,14 @@ public class Wallet {
     public void credit(BigDecimal amount) {
         validateAmount(amount);
         if (balance.add(amount).compareTo(MAX_BALANCE) > 0) {
-            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "Limite de saldo da carteira excedido.");
+            throw new ApiException(HttpStatus.UNPROCESSABLE_CONTENT, "Limite de saldo da carteira excedido.");
         }
         balance = balance.add(amount);
     }
 
     private void validateAmount(BigDecimal amount) {
         if (amount == null || amount.signum() <= 0 || amount.scale() > 2) {
-            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "Valor deve ser positivo e ter até duas casas decimais.");
+            throw new ApiException(HttpStatus.UNPROCESSABLE_CONTENT, "Valor deve ser positivo e ter até duas casas decimais.");
         }
     }
 }

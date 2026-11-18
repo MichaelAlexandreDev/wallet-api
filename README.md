@@ -4,7 +4,7 @@ API REST de transferências entre carteiras, desenvolvida como projeto de estudo
 
 O foco é uma implementação pequena, fácil de executar e explicar: regras de negócio explícitas, transações no PostgreSQL e testes dos cenários em que uma transferência pode falhar.
 
-**Stack:** Java 21, Spring Boot 3.5, Spring Web, Spring Security (JWT), Spring Data JPA, PostgreSQL 17, Flyway, Maven, JUnit 5, Mockito, Testcontainers e Docker Compose. A CI executa os testes no GitHub Actions.
+**Stack:** Java 21, Spring Boot 4.1, Spring Web MVC, Spring Security (JWT), Spring Data JPA, PostgreSQL 17, Flyway, Maven, JUnit 6, Mockito, Testcontainers e Docker Compose. A CI executa os testes no GitHub Actions.
 
 ## Executar a demonstração
 
@@ -20,7 +20,7 @@ Esse comando inicia a API, o PostgreSQL e um simulador HTTP local para autoriza�
 curl http://localhost:8081/actuator/health
 ```
 
-Após a inicialização, a resposta deve ser `{"status":"UP"}`. Para acompanhar a inicialização:
+Após a inicialização, a resposta deve trazer `"status":"UP"`. Para acompanhar a inicialização:
 
 ```bash
 docker compose logs -f api

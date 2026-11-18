@@ -8,7 +8,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import dev.starrk.wallet.auth.TokenService;
 import dev.starrk.wallet.integration.AuthorizationClient;
 import dev.starrk.wallet.integration.NotificationClient;
@@ -25,7 +25,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -39,7 +39,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.web.client.ResourceAccessException;
-import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
@@ -63,7 +63,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Testcontainers
 class WalletApiIT {
     @Container
-    static final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:17");
+    static final PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:17");
 
     @DynamicPropertySource
     static void database(DynamicPropertyRegistry registry) {
@@ -141,8 +141,8 @@ class WalletApiIT {
                 .andReturn();
         String location = first.getResponse().getHeader("Location");
         var originalReceipt = json.readTree(first.getResponse().getContentAsString());
-        String transferId = originalReceipt.get("id").asText();
-        String createdAt = originalReceipt.get("createdAt").asText();
+        String transferId = originalReceipt.get("id").asString();
+        String createdAt = originalReceipt.get("createdAt").asString();
 
         mvc.perform(transferPost(request("10.00"), key))
                 .andExpect(status().isCreated())
@@ -242,7 +242,7 @@ class WalletApiIT {
     @Test
     void rejectsMerchantAsPayer() throws Exception {
         mvc.perform(transferPost(payee, new TransferRequest(BigDecimal.ONE, payer.getId()), newIdempotencyKey()))
-                .andExpect(status().isUnprocessableEntity());
+                .andExpect(status().isUnprocessableContent());
         assertBalances("100.00", "0.00");
         assertThat(transfers.count()).isZero();
         verifyNoInteractions(authorization);
@@ -251,7 +251,7 @@ class WalletApiIT {
     @Test
     void rejectsInsufficientBalance() throws Exception {
         mvc.perform(transferPost(request("100.01"), newIdempotencyKey()))
-                .andExpect(status().isUnprocessableEntity());
+                .andExpect(status().isUnprocessableContent());
         assertBalances("100.00", "0.00");
         assertThat(transfers.count()).isZero();
         verifyNoInteractions(authorization);
@@ -260,7 +260,7 @@ class WalletApiIT {
     @Test
     void rejectsSelfTransfer() throws Exception {
         mvc.perform(transferPost(new TransferRequest(BigDecimal.ONE, payer.getId()), newIdempotencyKey()))
-                .andExpect(status().isUnprocessableEntity());
+                .andExpect(status().isUnprocessableContent());
         assertBalances("100.00", "0.00");
         verifyNoInteractions(authorization);
     }
@@ -327,7 +327,7 @@ class WalletApiIT {
                 service.transfer(payer.getId(), request("80.00"), newIdempotencyKey());
                 return true;
             } catch (ApiException exception) {
-                assertThat(exception.getStatus()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+                assertThat(exception.getStatus()).isEqualTo(HttpStatus.UNPROCESSABLE_CONTENT);
                 return false;
             }
         };
