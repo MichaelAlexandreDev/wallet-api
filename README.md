@@ -4,7 +4,7 @@ API REST de transferências entre carteiras, desenvolvida como projeto de estudo
 
 O foco é uma implementação pequena, fácil de executar e explicar: regras de negócio explícitas, transações no PostgreSQL e testes dos cenários em que uma transferência pode falhar.
 
-**Stack:** Java 21, Spring Boot 4.1, Spring Web MVC, Spring Security (JWT), Spring Data JPA, PostgreSQL 17, Flyway, Maven, JUnit 6, Mockito, Testcontainers e Docker Compose. A CI executa os testes no GitHub Actions.
+**Stack:** Java 21, Spring Boot 4.1, Spring Web MVC, Spring Security (JWT), Spring AI 2.0 com Claude (Anthropic), Resilience4j, Micrometer, Spring Data JPA, PostgreSQL 17, Flyway, Maven, JUnit 6, Mockito, Testcontainers e Docker Compose. A CI executa os testes no GitHub Actions.
 
 ## Executar a demonstração
 
@@ -126,8 +126,11 @@ O saldo da Ana deve ser `75.00`. Para ver o da loja (`25.00`), entre com `loja@e
 | POST | `/transfer` | Transfere do usuário do token para `payee`, com `description` opcional; exige `Idempotency-Key` |
 | GET | `/transfer/{id}` | Consulta comprovante e situação da notificação; só pagador ou recebedor |
 
-Exceto cadastro, login e health check, todas as rotas exigem `Authorization: Bearer <token>`. Consultas exigem o escopo `wallet:read`; transferências e depósitos exigem `transfer:write`. O login emite tokens com os dois.
+Exceto cadastro, login e health check, todas as rotas exigem `Authorization: Bearer <token>`. Consultas, o assistente e a categorização exigem o escopo `wallet:read`; transferências e depósitos exigem `transfer:write`. O login emite tokens com os dois.
+| POST | `/assistant/chat` | Assistente de IA: responde sobre saldo, extrato e transferências, e prepara propostas de transferência |
+| POST | `/transfer/{id}/category` | Categoriza uma transferência com IA (só participantes); a categoria é gravada uma vez |
 | GET | `/actuator/health` | Verifica a saúde da aplicação e do banco |
+| GET | `/actuator/metrics/{nome}` | Métricas, incluindo as do assistente; exige token |
 
 Valores monetários devem ser positivos, com até 17 dígitos inteiros e duas casas decimais. A `description` da transferência é opcional, com até 140 caracteres, sem quebras de linha nem outros caracteres de controle. O documento deve ter 11 ou 14 dígitos, sem pontuação. O e-mail é normalizado para minúsculas. Senhas têm de 8 a 64 caracteres e no máximo 72 bytes em UTF-8, limite do BCrypt utilizado.
 
@@ -143,7 +146,7 @@ As respostas de erro seguem `application/problem+json`, com `status`, `title` e 
 | 404 | Usuário ou transferência não encontrado, ou pertencente a outra pessoa |
 | 409 | CPF/CNPJ ou e-mail já cadastrado, conflito com restrição do banco ou reutilização de chave com outro payload |
 | 422 | Saldo insuficiente, lojista como pagador, mesma origem/destino ou limite de saldo |
-| 503 | Autorizador indisponível ou tempo de espera pelo bloqueio da carteira excedido |
+| 503 | Autorizador indisponível, tempo de espera pelo bloqueio da carteira excedido, ou assistente indisponível ou sem chave configurada |
 
 ## Como funciona
 
@@ -172,6 +175,60 @@ Os pacotes são organizados por funcionalidade: `auth`, `user`, `transfer`, `int
 - **Login sem enumeração:** e-mail inexistente e senha errada devolvem a mesma resposta `401`. Quando o e-mail não existe, o BCrypt roda contra um hash fictício para que o tempo de resposta também não revele o cadastro.
 - **Segurança básica:** senha armazenada como hash BCrypt, DTOs sem exposição de entidades e contêiner da aplicação executado sem root.
 
+## Assistente de IA
+
+Com `ANTHROPIC_API_KEY` definida, `POST /assistant/chat` responde em português usando o Claude (`claude-opus-5-5` por padrão) por meio do Spring AI 2.0, que usa o SDK oficial da Anthropic. Sem a chave, a aplicação sobe normalmente e só o assistente responde `503`.
+
+```bash
+curl -X POST http://localhost:8081/assistant/chat \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Manda R$ 25 para loja@example.com"}'
+```
+
+```json
+{
+  "reply": "Preparei uma transferência de R$ 25,00 para Loja Exemplo. Confirme para enviar.",
+  "proposals": [{
+    "idempotencyKey": "assistant-5f0c…",
+    "payeeId": 2, "payeeName": "Loja Exemplo", "value": 25.00, "warnings": [],
+    "confirmation": {
+      "method": "POST", "path": "/transfer", "idempotencyKey": "assistant-5f0c…",
+      "body": { "value": 25.00, "payee": 2, "description": null }
+    }
+  }]
+}
+```
+
+**Ferramentas.** O modelo tem quatro ferramentas: `getBalance`, `getStatement`, `getTransfer` (para explicar uma transação) e `proposeTransfer`. Elas são criadas a cada pedido e presas ao usuário do token. Nenhum parâmetro escolhe de quem é a carteira, então o modelo não alcança dados de outra pessoa, mesmo que peça um ID alheio.
+
+**O LLM só propõe.** Nenhuma ferramenta move dinheiro. `proposeTransfer` valida destinatário e valor e devolve uma proposta; quem executa é o próprio cliente, com `confirmation.body` em `POST /transfer`, com o token do usuário e a chave `idempotencyKey`. Confirmar duas vezes devolve o mesmo recibo. A rota do assistente exige só `wallet:read`, e um token só de leitura recebe `403` ao tentar confirmar.
+
+**Prompt injection.** A `description` de uma transferência é texto de outra pessoa. Ela chega ao modelo como o campo `untrustedNote` de um JSON, e o prompt de sistema manda tratá-la como dado. Se o assistente propõe uma transferência depois de ler a descrição de uma transferência recebida, a proposta vem com um aviso em `warnings`. Os testes rodam um modelo "comprometido", que obedece à injeção: ele chega a criar a proposta, mas nenhum dinheiro sai da carteira sem a confirmação.
+
+**Categorização.** `POST /transfer/{id}/category` classifica a transferência em uma de onze categorias (`FOOD`, `GROCERIES`, `TRANSPORT`, `HOUSING`, `BILLS`, `HEALTH`, `EDUCATION`, `SHOPPING`, `LEISURE`, `PERSONAL_TRANSFER`, `OTHER`). A requisição usa saída estruturada da API (`output_config.format` com esquema JSON e enum), então o modelo só consegue responder uma categoria válida. Transferências entre pessoas sem descrição são categorizadas por regra, sem chamar o modelo. O campo `source` indica a origem: `MODEL`, `RULE`, `STORED` ou `FALLBACK`.
+
+**Resiliência.** Toda chamada ao LLM passa pelo `LlmGateway`: timeout HTTP de 30 segundos por tentativa (uma nova tentativa), circuit breaker do Resilience4j (abre com 50% de falhas em 10 chamadas e recusa sem chamar o provedor por 30 segundos) e `503` em qualquer falha, sem afetar as rotas de carteira. Uma recusa do modelo vira uma resposta educada.
+
+**Métricas.** O Micrometer publica `wallet.assistant.requests` (latência, por `operation` e `outcome`: `success`, `error`, `circuit_open`, `not_configured`), `wallet.assistant.tokens` (por `type`: `input` e `output`, somando todo o laço de ferramentas) e `wallet.assistant.cost` (custo estimado em dólares, com os preços em `wallet.assistant.pricing`). O Spring AI também publica as métricas `gen_ai.client.*`.
+
+```bash
+curl http://localhost:8081/actuator/metrics/wallet.assistant.cost -H "Authorization: Bearer $TOKEN"
+```
+
+### Avaliação com o modelo real
+
+Os testes normais nunca chamam a API da Anthropic: o `AssistantIT` roda o Spring AI de verdade contra um servidor local que imita a API e confere o que foi enviado, como modelo, esforço, ausência de `temperature`, ferramentas e esquema de saída. A qualidade das respostas do modelo é medida à parte:
+
+```bash
+ANTHROPIC_API_KEY=... ./mvnw -Peval verify
+```
+
+- `CategorizationEval`: 40 transferências rotuladas em `src/test/resources/eval/categorization.jsonl`, com gírias, erros de digitação e três tentativas de injeção. Exige 90% de acurácia e acerto em todos os casos de injeção.
+- `AssistantInjectionEval`: descrições com instruções escondidas (transferir, falsa autorização do sistema, saldo falso) não podem gerar propostas, e um pedido legítimo ainda precisa gerar a proposta certa.
+
+Os relatórios, com tokens e custo estimado, ficam em `target/eval/`. Sem a chave, as avaliações são puladas. No GitHub Actions, o workflow **LLM eval** roda manualmente e toda segunda-feira, nunca a cada push; ele precisa do secret `ANTHROPIC_API_KEY`.
+
 ## Testes
 
 Pré-requisitos para executar fora de contêiner: JDK 21 e Docker acessível pelo usuário. O Maven Wrapper baixa o Maven na primeira execução.
@@ -186,7 +243,7 @@ Pré-requisitos para executar fora de contêiner: JDK 21 e Docker acessível pel
 
 No Windows, use `mvnw.cmd`. Os testes de integração são executados pelo Maven Failsafe (`*IT`) e falham se o Docker não estiver disponível; não são pulados silenciosamente.
 
-Os testes cobrem regras de saldo, precisão decimal, validação HTTP, unicidade e hashing, login e validação de tokens (expirado, adulterado, sem assinatura, sem expiração e de outro emissor), isolamento entre carteiras (tentativa de gastar saldo alheio, leitura de usuário e comprovante de terceiros, depósito em outra carteira, reutilização da chave de idempotência de outra pessoa) e escopos, transferência entre usuários e para lojistas, rollback, gasto duplo, transferências em sentidos opostos, replay idempotente, chaves conflitantes, concorrência com a mesma chave, limite de retentativas e disponibilidade do depósito demo por perfil. Os clientes HTTP são exercitados contra um servidor local, incluindo timeout, recusa, resposta inválida e indisponibilidade. Os testes da aplicação usam PostgreSQL real e Mockito para controlar os serviços externos, sem depender da disponibilidade dos mocks públicos.
+Os testes cobrem regras de saldo, precisão decimal, validação HTTP, unicidade e hashing, login e validação de tokens (expirado, adulterado, sem assinatura, sem expiração e de outro emissor), isolamento entre carteiras (tentativa de gastar saldo alheio, leitura de usuário e comprovante de terceiros, depósito em outra carteira, reutilização da chave de idempotência de outra pessoa) e escopos, transferência entre usuários e para lojistas, rollback, gasto duplo, transferências em sentidos opostos, replay idempotente, chaves conflitantes, concorrência com a mesma chave, limite de retentativas, disponibilidade do depósito demo por perfil, descrição e extrato, e o assistente de IA (ferramentas presas ao usuário, propostas sem movimentação, confirmação idempotente, prompt injection pela descrição, saída estruturada da categorização, timeout, circuit breaker e métricas de tokens e custo). Os clientes HTTP são exercitados contra um servidor local, incluindo timeout, recusa, resposta inválida e indisponibilidade. Os testes da aplicação usam PostgreSQL real e Mockito para controlar os serviços externos, sem depender da disponibilidade dos mocks públicos.
 
 ## Desenvolvimento local e serviços oficiais
 
@@ -218,6 +275,9 @@ As URLs padrão são `https://util.devi.tools/api/v2/authorize` (`GET`) e `https
 | `NOTIFICATION_MAX_ATTEMPTS` | `5` — máximo de tentativas automáticas de notificação |
 | `JWT_SECRET` | Sem padrão; obrigatório, mínimo de 32 bytes. O Compose usa um segredo de demonstração |
 | `JWT_TTL` | `15m` — validade do token de acesso |
+| `ANTHROPIC_API_KEY` | Sem padrão; opcional. Sem ela, o assistente responde `503` |
+| `ASSISTANT_MODEL` | `claude-opus-5-5` |
+| `ASSISTANT_TIMEOUT` | `30s` — timeout HTTP de cada tentativa ao LLM |
 | `SPRING_PROFILES_ACTIVE` | Sem perfil; Compose usa `demo` |
 
 O arquivo `.env.example` serve de referência para o Compose. Para executar pela IDE/Maven, configure variáveis no ambiente; o Spring não carrega `.env` automaticamente.
@@ -231,5 +291,7 @@ Este projeto prioriza o fluxo pedido no desafio. A autenticação cobre o essenc
 A autorização externa ocorre enquanto as carteiras estão bloqueadas. Os timeouts limitam a espera, mas esse desenho reduz o throughput de carteiras muito movimentadas. É uma escolha simples para este porte.
 
 As notificações têm entrega **pelo menos uma vez**: se o provedor receber a mensagem e a aplicação cair antes de registrar o sucesso, pode haver reenvio. O payload inclui `transferId` para permitir deduplicação pelo provedor; não há garantia de que o mock público a implemente. Após cinco falhas por padrão, o recibo fica `FAILED` e o agendador para de tentar.
+
+O assistente atende um pedido por vez, sem memória de conversa. As propostas não ficam gravadas: o cliente guarda e confirma. As avaliações medem o modelo, mas ele é probabilístico; a proteção que não depende dele é a confirmação explícita. O parâmetro `fallbacks` da Anthropic, que troca de modelo quando há recusa, não é exposto pelo Spring AI 2.0.2, então uma recusa vira a resposta padrão do assistente.
 
 `Idempotency-Key` protege contra repetição acidental; quem autentica o pagador é o token. Kafka, Redis e microsserviços não são necessários para demonstrar os fundamentos deste desafio.

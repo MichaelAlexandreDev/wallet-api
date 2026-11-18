@@ -445,6 +445,21 @@ class AssistantIT {
                 .timer().count()).isGreaterThanOrEqualTo(1);
     }
 
+    @Test
+    void metricsAreReadableThroughTheActuatorWithAToken() throws Exception {
+        anthropic.replyText("Olá!");
+        chat(ana, "Oi").andExpect(status().isOk());
+
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .get("/actuator/metrics/wallet.assistant.tokens").header(HttpHeaders.AUTHORIZATION, bearer(ana)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.availableTags[*].tag").value(
+                        org.hamcrest.Matchers.hasItems("operation", "type")));
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .get("/actuator/metrics/wallet.assistant.cost"))
+                .andExpect(status().isUnauthorized());
+    }
+
     private ResultActions categorize(User user, java.util.UUID transferId) throws Exception {
         return mvc.perform(post("/transfer/{id}/category", transferId).header(HttpHeaders.AUTHORIZATION, bearer(user)));
     }

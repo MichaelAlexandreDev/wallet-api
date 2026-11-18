@@ -105,5 +105,37 @@ Idempotency-Key: demo-transfer-insufficient-001
 
 {"value": 1000.00, "payee": {{payee}}}
 
+### Extrato
+GET {{baseUrl}}/users/me/transfers?limit=20
+Authorization: Bearer {{login.response.body.accessToken}}
+
+### Assistente: perguntar (exige ANTHROPIC_API_KEY; sem ela, 503)
+# @name chat
+POST {{baseUrl}}/assistant/chat
+Authorization: Bearer {{login.response.body.accessToken}}
+Content-Type: application/json
+
+{"message": "Qual é o meu saldo e o que entrou por último?"}
+
+### Assistente: pedir uma transferência (só cria uma proposta)
+# @name proposal
+POST {{baseUrl}}/assistant/chat
+Authorization: Bearer {{login.response.body.accessToken}}
+Content-Type: application/json
+
+{"message": "Manda R$ 10 para loja@example.com"}
+
+### Confirmar a proposta pelo endpoint idempotente
+POST {{baseUrl}}/transfer
+Authorization: Bearer {{login.response.body.accessToken}}
+Content-Type: application/json
+Idempotency-Key: {{proposal.response.body.proposals[0].idempotencyKey}}
+
+{"value": {{proposal.response.body.proposals[0].value}}, "payee": {{proposal.response.body.proposals[0].payeeId}}}
+
+### Métricas do assistente
+GET {{baseUrl}}/actuator/metrics/wallet.assistant.tokens
+Authorization: Bearer {{login.response.body.accessToken}}
+
 ### Health check
 GET {{baseUrl}}/actuator/health

@@ -62,7 +62,8 @@ management:
   endpoints:
     web:
       exposure:
-        include: health
+        # /actuator/metrics exige token. Em produção, mova o Actuator para uma porta interna (management.server.port).
+        include: health,metrics
   endpoint:
     health:
       show-details: never
