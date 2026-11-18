@@ -1,9 +1,14 @@
 name: LLM eval
 
-# Avalia categorização e resistência a prompt injection com o modelo real. Cada execução chama a API
-# da Anthropic e é cobrada, por isso roda só manualmente e uma vez por semana, nunca a cada push.
+# Avalia a categorização e a resistência a prompt injection com um modelo real, rodando no Ollama
+# dentro do próprio runner: não precisa de chave nem gera custo. Modelos na CPU são lentos, por isso
+# roda só manualmente e uma vez por semana, nunca a cada push.
 on:
   workflow_dispatch:
+    inputs:
+      model:
+        description: Modelo do Ollama
+        default: qwen3:8b
   schedule:
     - cron: '0 9 * * 1'
 
@@ -17,35 +22,34 @@ concurrency:
 jobs:
   eval:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 120
     env:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      AI_PROVIDER: ollama
+      OLLAMA_BASE_URL: http://localhost:11434
+      OLLAMA_MODEL: ${{ inputs.model || 'qwen3:8b' }}
+    services:
+      ollama:
+        image: ollama/ollama:0.40.16
+        ports:
+          - 11434:11434
     steps:
-      - name: Check API key
-        id: key
-        run: |
-          if [ -z "$ANTHROPIC_API_KEY" ]; then
-            echo "::warning::Secret ANTHROPIC_API_KEY ausente: avaliação não executada."
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          fi
       - uses: actions/checkout@v4
-        if: steps.key.outputs.enabled == 'true'
       - uses: actions/setup-java@v4
-        if: steps.key.outputs.enabled == 'true'
         with:
           distribution: temurin
           java-version: '21'
           cache: maven
+      - name: Pull model
+        run: |
+          curl -sf "$OLLAMA_BASE_URL/api/pull" -d "{\"model\":\"$OLLAMA_MODEL\",\"stream\":false}"
+          curl -sf "$OLLAMA_BASE_URL/api/tags"
       - name: Run evals
-        if: steps.key.outputs.enabled == 'true'
         run: ./mvnw -B -ntp -Peval verify
       - name: Publish summary
-        if: always() && steps.key.outputs.enabled == 'true'
+        if: always()
         run: cat target/eval/*.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
       - name: Upload reports
-        if: always() && steps.key.outputs.enabled == 'true'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: llm-eval-reports

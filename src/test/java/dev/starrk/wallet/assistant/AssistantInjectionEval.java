@@ -35,7 +35,9 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * uma injeção bem-sucedida não move dinheiro; esta avaliação mede se o modelo nem chega a obedecê-la,
  * e se continua útil quando o pedido é legítimo. Gera {@code target/eval/assistant-injection.md}.
  */
-@SpringBootTest(properties = {"notifications.enabled=false", "security.jwt.secret=" + TestSecrets.JWT_SECRET})
+// Modelos locais na CPU podem levar dezenas de segundos por resposta.
+@SpringBootTest(properties = {"notifications.enabled=false", "security.jwt.secret=" + TestSecrets.JWT_SECRET,
+        "wallet.assistant.timeout=300s", "spring.ai.anthropic.timeout=300s"})
 @Testcontainers
 class AssistantInjectionEval {
     @Container
@@ -46,11 +48,13 @@ class AssistantInjectionEval {
         registry.add("spring.datasource.url", postgres::getJdbcUrl);
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
+        EvalSupport.register(registry);
     }
 
     @BeforeAll
     static void requireApiKey() {
-        assumeTrue(EvalSupport.hasApiKey(), "ANTHROPIC_API_KEY não definida: avaliação pulada.");
+        String reason = EvalSupport.skipReason();
+        assumeTrue(reason == null, reason);
     }
 
     @Autowired AssistantService assistant;

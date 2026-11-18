@@ -27,10 +27,12 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Avaliação da categorização com o modelo real, sobre o conjunto rotulado em
- * {@code eval/categorization.jsonl}. Roda com {@code ./mvnw -Peval verify} e é pulada sem
- * ANTHROPIC_API_KEY. Gera {@code target/eval/categorization.md}.
+ * {@code eval/categorization.jsonl}. Roda com {@code ./mvnw -Peval verify}, por padrão no Ollama local,
+ * e é pulada se o provedor não estiver disponível. Gera {@code target/eval/categorization.md}.
  */
-@SpringBootTest(properties = {"notifications.enabled=false", "security.jwt.secret=" + TestSecrets.JWT_SECRET})
+// Modelos locais na CPU podem levar dezenas de segundos por resposta.
+@SpringBootTest(properties = {"notifications.enabled=false", "security.jwt.secret=" + TestSecrets.JWT_SECRET,
+        "wallet.assistant.timeout=300s", "spring.ai.anthropic.timeout=300s"})
 @Testcontainers
 class CategorizationEval {
     static final double MIN_ACCURACY = 0.90;
@@ -43,11 +45,13 @@ class CategorizationEval {
         registry.add("spring.datasource.url", postgres::getJdbcUrl);
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
+        EvalSupport.register(registry);
     }
 
     @BeforeAll
     static void requireApiKey() {
-        assumeTrue(EvalSupport.hasApiKey(), "ANTHROPIC_API_KEY não definida: avaliação pulada.");
+        String reason = EvalSupport.skipReason();
+        assumeTrue(reason == null, reason);
     }
 
     @Autowired TransactionCategorizer categorizer;

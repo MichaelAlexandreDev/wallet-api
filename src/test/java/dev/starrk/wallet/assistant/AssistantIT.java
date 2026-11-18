@@ -48,11 +48,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * Exercita o assistente de ponta a ponta (HTTP, Spring Security, Spring AI, ferramentas e banco)
- * contra um servidor que imita a API da Anthropic. Não usa chave nem gera custo.
+ * contra um servidor que imita a API da Anthropic. Não usa chave nem gera custo. O caminho do Ollama,
+ * provedor padrão, é coberto por {@link OllamaProviderIT}.
  */
 @SpringBootTest(properties = {
         "notifications.enabled=false",
         "security.jwt.secret=" + TestSecrets.JWT_SECRET,
+        "spring.ai.model.chat=anthropic",
         "spring.ai.anthropic.api-key=test-key",
         "spring.ai.anthropic.max-retries=0",
         "spring.ai.anthropic.timeout=1s"})

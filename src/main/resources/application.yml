@@ -16,11 +16,20 @@ spring:
       fail-on-unknown-properties: true
       accept-float-as-int: false
   ai:
+    model:
+      # ollama (padrão: local e gratuito) ou anthropic (Claude: exige ANTHROPIC_API_KEY e é cobrado).
+      chat: ${AI_PROVIDER:ollama}
+    ollama:
+      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+    retry:
+      # O padrão do Spring AI repete até 10 vezes, com espera de até minutos. Aqui uma falha vira 503 na
+      # hora e quem decide é o circuit breaker do LlmGateway.
+      max-attempts: 1
     anthropic:
       # Sem chave, a API sobe normalmente e o assistente responde 503 "não configurado".
       api-key: ${ANTHROPIC_API_KEY:}
       # Por tentativa HTTP; com uma nova tentativa, a espera máxima por chamada fica em 2x esse valor.
-      timeout: ${ASSISTANT_TIMEOUT:30s}
+      timeout: ${ASSISTANT_TIMEOUT:120s}
       max-retries: 1
 
 security:
@@ -32,12 +41,20 @@ security:
 
 wallet:
   assistant:
-    model: ${ASSISTANT_MODEL:claude-opus-5-5}
-    chat-effort: medium
-    categorization-effort: low
-    max-tokens: 16000
-    # Preço do Claude Opus 5.5 por milhão de tokens, usado só para estimar custo nas métricas.
-    pricing:
+    # Tempo máximo de resposta do LLM. Modelos locais na CPU são lentos; por isso o padrão é folgado.
+    timeout: ${ASSISTANT_TIMEOUT:120s}
+    ollama:
+      model: ${OLLAMA_MODEL:qwen3:8b}
+      num-ctx: 8192
+      max-tokens: 1024
+      think: false
+      keep-alive: 10m
+    anthropic:
+      model: ${ANTHROPIC_MODEL:claude-opus-5-5}
+      chat-effort: medium
+      categorization-effort: low
+      max-tokens: 16000
+      # Preço do Claude Opus 5.5 por milhão de tokens, usado só para estimar custo nas métricas.
       input-usd-per-million-tokens: 4.00
       output-usd-per-million-tokens: 20.00
     circuit-breaker:

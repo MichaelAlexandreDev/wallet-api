@@ -13,7 +13,6 @@ import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 
@@ -24,27 +23,23 @@ import org.springframework.stereotype.Component;
 @Component
 public class LlmGateway {
     static final String UNAVAILABLE = "Assistente indisponível no momento. Suas operações de carteira continuam funcionando.";
-    static final String NOT_CONFIGURED = "Assistente não configurado: defina ANTHROPIC_API_KEY para habilitá-lo.";
     private static final BigDecimal ONE_MILLION = BigDecimal.valueOf(1_000_000);
     private static final Logger log = LoggerFactory.getLogger(LlmGateway.class);
 
     private final CircuitBreaker circuitBreaker;
     private final MeterRegistry meters;
-    private final AssistantProperties properties;
-    private final boolean configured;
+    private final ModelProvider provider;
 
-    public LlmGateway(AssistantProperties properties, MeterRegistry meters, CircuitBreaker llmCircuitBreaker,
-            @Value("${spring.ai.anthropic.api-key:}") String apiKey) {
-        this.properties = properties;
+    LlmGateway(ModelProvider provider, MeterRegistry meters, CircuitBreaker llmCircuitBreaker) {
+        this.provider = provider;
         this.meters = meters;
         this.circuitBreaker = llmCircuitBreaker;
-        this.configured = !apiKey.isBlank();
     }
 
     public ChatResponse call(String operation, Supplier<ChatResponse> request) {
-        if (!configured) {
+        if (!provider.configured()) {
             record(operation, "not_configured", Timer.start(meters));
-            throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, NOT_CONFIGURED);
+            throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, provider.notConfiguredMessage());
         }
         var sample = Timer.start(meters);
         try {
@@ -56,7 +51,7 @@ public class LlmGateway {
             record(operation, "circuit_open", sample);
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, UNAVAILABLE);
         } catch (RuntimeException exception) {
-            log.warn("Falha ao chamar o LLM na operação {}: {}", operation, exception.toString());
+            log.warn("Falha ao chamar o LLM ({}) na operação {}: {}", provider.name(), operation, exception.toString());
             record(operation, "error", sample);
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, UNAVAILABLE);
         }
@@ -67,6 +62,7 @@ public class LlmGateway {
                 .description("Chamadas ao LLM, incluindo o laço de ferramentas")
                 .tag("operation", operation)
                 .tag("outcome", outcome)
+                .tag("provider", provider.name())
                 .register(meters));
     }
 
@@ -77,9 +73,8 @@ public class LlmGateway {
         tokens(operation, "input").increment(input);
         tokens(operation, "output").increment(output);
 
-        var pricing = properties.pricing();
-        BigDecimal cost = pricing.inputUsdPerMillionTokens().multiply(BigDecimal.valueOf(input))
-                .add(pricing.outputUsdPerMillionTokens().multiply(BigDecimal.valueOf(output)))
+        BigDecimal cost = provider.inputUsdPerMillionTokens().multiply(BigDecimal.valueOf(input))
+                .add(provider.outputUsdPerMillionTokens().multiply(BigDecimal.valueOf(output)))
                 .divide(ONE_MILLION, MathContext.DECIMAL64);
         Counter.builder("wallet.assistant.cost")
                 .description("Custo estimado das chamadas ao LLM")

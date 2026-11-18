@@ -202,11 +202,12 @@ class AccessControlIT {
     }
 
     @Test
-    void assistantWithoutAnApiKeyAnswers503AndTheWalletKeepsWorking() throws Exception {
+    void unreachableModelAnswers503AndTheWalletKeepsWorking() throws Exception {
+        // O Ollama dos testes aponta para uma porta fechada (src/test/resources/config).
         mvc.perform(post("/assistant/chat").header(HttpHeaders.AUTHORIZATION, bearer(ana))
                         .contentType(MediaType.APPLICATION_JSON).content("{\"message\":\"Qual meu saldo?\"}"))
                 .andExpect(status().isServiceUnavailable())
-                .andExpect(jsonPath("$.detail").value(containsString("ANTHROPIC_API_KEY")));
+                .andExpect(jsonPath("$.detail").value(containsString("indisponível")));
         mvc.perform(transferAs(ana, store.getId(), "1.00")).andExpect(status().isCreated());
     }
 

@@ -10,14 +10,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-import com.anthropic.core.JsonValue;
-import com.anthropic.models.messages.JsonOutputFormat;
-import com.anthropic.models.messages.OutputConfig;
 import dev.starrk.wallet.transfer.TransferCategory;
 import dev.starrk.wallet.user.UserType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.anthropic.AnthropicChatOptions;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
@@ -26,26 +22,26 @@ import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 
 /**
- * Classifica uma transferência em {@link TransferCategory} com saída estruturada: a API da Anthropic
- * só devolve JSON que segue o esquema, com a categoria restrita ao enum. Casos óbvios são resolvidos
- * por regra, sem chamar o modelo.
+ * Classifica uma transferência em {@link TransferCategory} com saída estruturada: o provedor (Ollama
+ * ou Anthropic) só gera JSON que segue o esquema, com a categoria restrita ao enum. Casos óbvios são
+ * resolvidos por regra, sem chamar o modelo.
  */
 @Component
 public class TransactionCategorizer {
     private static final Logger log = LoggerFactory.getLogger(TransactionCategorizer.class);
-    static final JsonOutputFormat SCHEMA = schema();
+    static final Map<String, Object> SCHEMA = schema();
 
     private final ChatClient chat;
     private final LlmGateway gateway;
-    private final AssistantProperties properties;
+    private final ModelProvider provider;
     private final ObjectMapper json;
     private final String systemPrompt;
 
-    public TransactionCategorizer(ChatClient.Builder chat, LlmGateway gateway, AssistantProperties properties,
+    TransactionCategorizer(ChatClient.Builder chat, LlmGateway gateway, ModelProvider provider,
             ObjectMapper json, @Value("classpath:prompts/categorization-system.md") Resource systemPrompt) {
         this.chat = chat.build();
         this.gateway = gateway;
-        this.properties = properties;
+        this.provider = provider;
         this.json = json;
         this.systemPrompt = read(systemPrompt).replace("{categories}", Arrays.stream(TransferCategory.values())
                 .map(category -> "- " + category.name() + ": " + category.meaning())
@@ -59,13 +55,7 @@ public class TransactionCategorizer {
         var response = gateway.call("categorize", () -> chat.prompt()
                 .system(systemPrompt)
                 .user(json.writeValueAsString(input))
-                .options(AnthropicChatOptions.builder()
-                        .model(properties.model())
-                        .maxTokens(4096)
-                        .outputConfig(OutputConfig.builder()
-                                .effort(AssistantService.effort(properties.categorizationEffort()))
-                                .format(SCHEMA)
-                                .build()))
+                .options(provider.structuredOptions(SCHEMA))
                 .call()
                 .chatResponse());
         String text = response.getResult() == null ? null : response.getResult().getOutput().getText();
@@ -78,18 +68,16 @@ public class TransactionCategorizer {
         }
     }
 
-    private static JsonOutputFormat schema() {
+    private static Map<String, Object> schema() {
         Map<String, Object> category = new LinkedHashMap<>();
         category.put("type", "string");
         category.put("enum", Arrays.stream(TransferCategory.values()).map(Enum::name).toList());
-        return JsonOutputFormat.builder()
-                .schema(JsonOutputFormat.Schema.builder()
-                        .putAdditionalProperty("type", JsonValue.from("object"))
-                        .putAdditionalProperty("properties", JsonValue.from(Map.of("category", category)))
-                        .putAdditionalProperty("required", JsonValue.from(List.of("category")))
-                        .putAdditionalProperty("additionalProperties", JsonValue.from(false))
-                        .build())
-                .build();
+        Map<String, Object> schema = new LinkedHashMap<>();
+        schema.put("type", "object");
+        schema.put("properties", Map.of("category", category));
+        schema.put("required", List.of("category"));
+        schema.put("additionalProperties", false);
+        return Map.copyOf(schema);
     }
 
     private static String read(Resource resource) {

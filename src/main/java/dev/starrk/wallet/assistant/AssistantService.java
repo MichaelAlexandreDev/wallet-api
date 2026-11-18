@@ -4,12 +4,9 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
-import java.util.Locale;
 
-import com.anthropic.models.messages.OutputConfig;
 import dev.starrk.wallet.transfer.TransferService;
 import dev.starrk.wallet.user.UserRepository;
-import org.springframework.ai.anthropic.AnthropicChatOptions;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.beans.factory.annotation.Value;
@@ -25,17 +22,17 @@ public class AssistantService {
     private final LlmGateway gateway;
     private final UserRepository users;
     private final TransferService transfers;
-    private final AssistantProperties properties;
+    private final ModelProvider provider;
     private final String systemPrompt;
 
-    public AssistantService(ChatClient.Builder chat, LlmGateway gateway, UserRepository users,
-            TransferService transfers, AssistantProperties properties,
+    AssistantService(ChatClient.Builder chat, LlmGateway gateway, UserRepository users,
+            TransferService transfers, ModelProvider provider,
             @Value("classpath:prompts/assistant-system.md") Resource systemPrompt) {
         this.chat = chat.build();
         this.gateway = gateway;
         this.users = users;
         this.transfers = transfers;
-        this.properties = properties;
+        this.provider = provider;
         this.systemPrompt = read(systemPrompt);
     }
 
@@ -45,17 +42,10 @@ public class AssistantService {
                 .system(systemPrompt)
                 .user(message)
                 .tools(tools)
-                .options(AnthropicChatOptions.builder()
-                        .model(properties.model())
-                        .maxTokens(properties.maxTokens())
-                        .effort(effort(properties.chatEffort())))
+                .options(provider.chatOptions())
                 .call()
                 .chatResponse());
         return new AssistantReply(replyText(response), tools.proposals());
-    }
-
-    static OutputConfig.Effort effort(String value) {
-        return OutputConfig.Effort.of(value.toLowerCase(Locale.ROOT));
     }
 
     private static String replyText(ChatResponse response) {
