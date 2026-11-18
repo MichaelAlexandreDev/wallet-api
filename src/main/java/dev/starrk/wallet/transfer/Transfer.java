@@ -36,6 +36,10 @@ public class Transfer {
     @Column(length = 140)
     private String description;
 
+    @Enumerated(EnumType.STRING)
+    @Column(length = 20)
+    private TransferCategory category;
+
     @Column(nullable = false)
     private Instant createdAt;
 
@@ -95,6 +99,7 @@ public class Transfer {
     public String getIdempotencyKey() { return idempotencyKey; }
     public String getRequestFingerprint() { return requestFingerprint; }
     public String getDescription() { return description; }
+    public TransferCategory getCategory() { return category; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getNotifiedAt() { return notifiedAt; }
     public Instant getNextNotificationAt() { return nextNotificationAt; }

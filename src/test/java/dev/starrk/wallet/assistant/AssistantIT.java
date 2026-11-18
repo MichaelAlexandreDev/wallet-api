@@ -9,6 +9,7 @@ import dev.starrk.wallet.auth.JwtProperties;
 import dev.starrk.wallet.auth.TokenService;
 import dev.starrk.wallet.integration.AuthorizationClient;
 import dev.starrk.wallet.integration.NotificationClient;
+import dev.starrk.wallet.transfer.TransferCategory;
 import dev.starrk.wallet.transfer.TransferRepository;
 import dev.starrk.wallet.transfer.TransferRequest;
 import dev.starrk.wallet.transfer.TransferService;
@@ -365,6 +366,87 @@ class AssistantIT {
                 .isCloseTo(0.00268, org.assertj.core.data.Offset.offset(1e-9));
         assertThat(meters.get("wallet.assistant.requests").tag("operation", "chat").tag("outcome", "success")
                 .timer().count()).isGreaterThanOrEqualTo(1);
+    }
+
+    @Test
+    void categorizesWithStructuredOutputAndStoresTheResult() throws Exception {
+        var transfer = transferService.transfer(ana.getId(),
+                new TransferRequest(new BigDecimal("32.90"), store.getId(), "lanche no ifood"), "k");
+        anthropic.replyText("{\"category\":\"FOOD\"}");
+
+        categorize(ana, transfer.id())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.category").value("FOOD"))
+                .andExpect(jsonPath("$.source").value("MODEL"));
+
+        JsonNode request = anthropic.requests().getFirst();
+        assertThat(request.at("/output_config/format/type").asString()).isEqualTo("json_schema");
+        JsonNode schema = request.at("/output_config/format/schema");
+        assertThat(schema.get("additionalProperties").asBoolean()).isFalse();
+        assertThat(schema.at("/properties/category/enum")).hasSize(TransferCategory.values().length);
+        assertThat(request.at("/output_config/effort").asString()).isEqualTo("low");
+        assertThat(request.has("tools")).isFalse();
+        assertThat(request.has("temperature")).isFalse();
+        JsonNode input = json.readTree(request.at("/messages/0/content").asString());
+        assertThat(input.get("description").asString()).isEqualTo("lanche no ifood");
+        assertThat(input.get("payeeType").asString()).isEqualTo("MERCHANT");
+        assertThat(input.has("payer")).isFalse();
+
+        // A categoria fica gravada: a segunda chamada, mesmo do recebedor, não consulta o modelo.
+        categorize(store, transfer.id())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.category").value("FOOD"))
+                .andExpect(jsonPath("$.source").value("STORED"));
+        assertThat(anthropic.requests()).hasSize(1);
+        assertThat(transfers.findById(transfer.id()).orElseThrow().getCategory()).isEqualTo(TransferCategory.FOOD);
+    }
+
+    @Test
+    void transferBetweenPeopleWithoutDescriptionIsCategorizedByRule() throws Exception {
+        var transfer = transferService.transfer(ana.getId(), new TransferRequest(BigDecimal.TEN, bia.getId()), "k");
+
+        categorize(ana, transfer.id())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.category").value("PERSONAL_TRANSFER"))
+                .andExpect(jsonPath("$.source").value("RULE"));
+        assertThat(anthropic.requests()).isEmpty();
+    }
+
+    @Test
+    void onlyParticipantsCanCategorize() throws Exception {
+        var transfer = transferService.transfer(ana.getId(),
+                new TransferRequest(BigDecimal.ONE, store.getId(), "uber"), "k");
+
+        categorize(bia, transfer.id()).andExpect(status().isNotFound());
+        assertThat(anthropic.requests()).isEmpty();
+    }
+
+    @Test
+    void unexpectedModelOutputFallsBackToOther() throws Exception {
+        var transfer = transferService.transfer(ana.getId(),
+                new TransferRequest(BigDecimal.ONE, store.getId(), "???"), "k");
+        anthropic.replyText("{\"category\":\"CRYPTO\"}");
+
+        categorize(ana, transfer.id())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.category").value("OTHER"))
+                .andExpect(jsonPath("$.source").value("FALLBACK"));
+    }
+
+    @Test
+    void categorizationFailureKeepsTheTransferUncategorized() throws Exception {
+        var transfer = transferService.transfer(ana.getId(),
+                new TransferRequest(BigDecimal.ONE, store.getId(), "farmácia"), "k");
+        anthropic.replyError(529);
+
+        categorize(ana, transfer.id()).andExpect(status().isServiceUnavailable());
+        assertThat(transfers.findById(transfer.id()).orElseThrow().getCategory()).isNull();
+        assertThat(meters.get("wallet.assistant.requests").tag("operation", "categorize").tag("outcome", "error")
+                .timer().count()).isGreaterThanOrEqualTo(1);
+    }
+
+    private ResultActions categorize(User user, java.util.UUID transferId) throws Exception {
+        return mvc.perform(post("/transfer/{id}/category", transferId).header(HttpHeaders.AUTHORIZATION, bearer(user)));
     }
 
     private ResultActions chat(User user, String message) throws Exception {

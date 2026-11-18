@@ -1,0 +1,53 @@
+name: LLM eval
+
+# Avalia categorização e resistência a prompt injection com o modelo real. Cada execução chama a API
+# da Anthropic e é cobrada, por isso roda só manualmente e uma vez por semana, nunca a cada push.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 9 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: llm-eval
+  cancel-in-progress: false
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - name: Check API key
+        id: key
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::warning::Secret ANTHROPIC_API_KEY ausente: avaliação não executada."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.key.outputs.enabled == 'true'
+      - uses: actions/setup-java@v4
+        if: steps.key.outputs.enabled == 'true'
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Run evals
+        if: steps.key.outputs.enabled == 'true'
+        run: ./mvnw -B -ntp -Peval verify
+      - name: Publish summary
+        if: always() && steps.key.outputs.enabled == 'true'
+        run: cat target/eval/*.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+      - name: Upload reports
+        if: always() && steps.key.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-eval-reports
+          path: target/eval/
+          if-no-files-found: ignore
