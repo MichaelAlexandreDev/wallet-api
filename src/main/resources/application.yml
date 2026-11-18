@@ -15,6 +15,13 @@ spring:
     deserialization:
       fail-on-unknown-properties: true
       accept-float-as-int: false
+  ai:
+    anthropic:
+      # Sem chave, a API sobe normalmente e o assistente responde 503 "não configurado".
+      api-key: ${ANTHROPIC_API_KEY:}
+      # Por tentativa HTTP; com uma nova tentativa, a espera máxima por chamada fica em 2x esse valor.
+      timeout: ${ASSISTANT_TIMEOUT:30s}
+      max-retries: 1
 
 security:
   jwt:
@@ -22,6 +29,22 @@ security:
     secret: ${JWT_SECRET:}
     issuer: wallet-api
     ttl: ${JWT_TTL:15m}
+
+wallet:
+  assistant:
+    model: ${ASSISTANT_MODEL:claude-opus-5-5}
+    chat-effort: medium
+    categorization-effort: low
+    max-tokens: 16000
+    # Preço do Claude Opus 5.5 por milhão de tokens, usado só para estimar custo nas métricas.
+    pricing:
+      input-usd-per-million-tokens: 4.00
+      output-usd-per-million-tokens: 20.00
+    circuit-breaker:
+      failure-rate-threshold: 50
+      sliding-window-size: 10
+      minimum-number-of-calls: 5
+      wait-duration-in-open-state: 30s
 
 services:
   authorization-url: ${AUTHORIZATION_URL:https://util.devi.tools/api/v2/authorize}

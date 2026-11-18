@@ -27,6 +27,9 @@ services:
       # Segredo apenas para a demonstração local. Em qualquer outro ambiente, defina JWT_SECRET.
       JWT_SECRET: ${JWT_SECRET:-local-demo-secret-do-not-use-in-production}
       JWT_TTL: ${JWT_TTL:-15m}
+      # Opcional: sem chave, o assistente responde 503 e o resto da API funciona normalmente.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ASSISTANT_MODEL: ${ASSISTANT_MODEL:-claude-opus-5-5}
       AUTHORIZATION_URL: ${AUTHORIZATION_URL:-https://util.devi.tools/api/v2/authorize}
       NOTIFICATION_URL: ${NOTIFICATION_URL:-https://util.devi.tools/api/v1/notify}
       NOTIFICATION_MAX_ATTEMPTS: ${NOTIFICATION_MAX_ATTEMPTS:-5}

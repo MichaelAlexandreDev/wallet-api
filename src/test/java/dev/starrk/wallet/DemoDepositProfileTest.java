@@ -2,6 +2,7 @@ package dev.starrk.wallet;
 
 import java.time.Clock;
 
+import dev.starrk.wallet.assistant.AssistantService;
 import dev.starrk.wallet.auth.AuthService;
 import dev.starrk.wallet.auth.JwtProperties;
 import dev.starrk.wallet.auth.SecurityConfiguration;
@@ -35,6 +36,9 @@ class DemoDepositProfileTest {
     @MockitoBean
     private AuthService auth;
 
+    @MockitoBean
+    private AssistantService assistant;
+
     @Autowired
     private JwtEncoder encoder;
 
@@ -51,6 +55,6 @@ class DemoDepositProfileTest {
                         .content("{\"value\":50.00}"))
                 .andExpect(status().isNotFound());
 
-        verifyNoInteractions(users, transfers, auth);
+        verifyNoInteractions(users, transfers, auth, assistant);
     }
 }

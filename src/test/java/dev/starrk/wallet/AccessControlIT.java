@@ -202,6 +202,15 @@ class AccessControlIT {
     }
 
     @Test
+    void assistantWithoutAnApiKeyAnswers503AndTheWalletKeepsWorking() throws Exception {
+        mvc.perform(post("/assistant/chat").header(HttpHeaders.AUTHORIZATION, bearer(ana))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"message\":\"Qual meu saldo?\"}"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.detail").value(containsString("ANTHROPIC_API_KEY")));
+        mvc.perform(transferAs(ana, store.getId(), "1.00")).andExpect(status().isCreated());
+    }
+
+    @Test
     void cannotDepositIntoAnotherWallet() throws Exception {
         mvc.perform(post("/users/{id}/deposits", bia.getId()).header(HttpHeaders.AUTHORIZATION, bearer(ana))
                         .contentType(MediaType.APPLICATION_JSON).content("{\"value\":10.00}"))

@@ -57,6 +57,8 @@ public class SecurityConfiguration {
                         // Escopos limitam o que o token pode fazer; a posse da carteira é verificada nos services.
                         .requestMatchers(HttpMethod.POST, "/transfer", "/users/*/deposits").hasAuthority(TRANSFER_WRITE)
                         .requestMatchers(HttpMethod.GET, "/users/**", "/transfer/**").hasAuthority(WALLET_READ)
+                        // O assistente só lê e propõe; quem move dinheiro é o usuário, em POST /transfer.
+                        .requestMatchers(HttpMethod.POST, "/assistant/**").hasAuthority(WALLET_READ)
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(server -> server
                         .jwt(Customizer.withDefaults())
