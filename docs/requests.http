@@ -27,38 +27,83 @@ Content-Type: application/json
   "type": "MERCHANT"
 }
 
-### Adicionar saldo de demonstração (perfil demo)
+### Entrar como pagador
+# @name login
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{"email": "ana@example.com", "password": "senha-de-exemplo"}
+
+### Entrar como lojista
+# @name storeLogin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{"email": "loja@example.com", "password": "senha-de-exemplo"}
+
+### Consultar a própria conta
+GET {{baseUrl}}/users/me
+Authorization: Bearer {{login.response.body.accessToken}}
+
+### Sem token (401)
+GET {{baseUrl}}/users/me
+
+### Senha errada (401, mesma resposta de e-mail inexistente)
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{"email": "ana@example.com", "password": "senha-errada-123"}
+
+### Adicionar saldo de demonstração na própria carteira (perfil demo)
 POST {{baseUrl}}/users/{{payer}}/deposits
+Authorization: Bearer {{login.response.body.accessToken}}
 Content-Type: application/json
 
 {"value": 100.00}
 
-### Transferir
+### Transferir (o pagador é o usuário do token)
 POST {{baseUrl}}/transfer
+Authorization: Bearer {{login.response.body.accessToken}}
 Content-Type: application/json
 Idempotency-Key: demo-transfer-success-001
 
-{"value": 25.00, "payer": {{payer}}, "payee": {{payee}}}
+{"value": 25.00, "payee": {{payee}}}
 
 ### Consultar saldo do pagador
-GET {{baseUrl}}/users/{{payer}}
+GET {{baseUrl}}/users/me
+Authorization: Bearer {{login.response.body.accessToken}}
 
 ### Consultar saldo do recebedor
-GET {{baseUrl}}/users/{{payee}}
+GET {{baseUrl}}/users/me
+Authorization: Bearer {{storeLogin.response.body.accessToken}}
 
-### Lojista não pode pagar (422)
+### Consultar a carteira de outra pessoa (404)
+GET {{baseUrl}}/users/{{payee}}
+Authorization: Bearer {{login.response.body.accessToken}}
+
+### Tentar informar outro pagador no corpo (400: campo payer não é aceito)
 POST {{baseUrl}}/transfer
+Authorization: Bearer {{login.response.body.accessToken}}
 Content-Type: application/json
-Idempotency-Key: demo-transfer-merchant-001
+Idempotency-Key: demo-transfer-foreign-payer-001
 
 {"value": 1.00, "payer": {{payee}}, "payee": {{payer}}}
 
+### Lojista não pode pagar (422)
+POST {{baseUrl}}/transfer
+Authorization: Bearer {{storeLogin.response.body.accessToken}}
+Content-Type: application/json
+Idempotency-Key: demo-transfer-merchant-001
+
+{"value": 1.00, "payee": {{payer}}}
+
 ### Saldo insuficiente (422)
 POST {{baseUrl}}/transfer
+Authorization: Bearer {{login.response.body.accessToken}}
 Content-Type: application/json
 Idempotency-Key: demo-transfer-insufficient-001
 
-{"value": 1000.00, "payer": {{payer}}, "payee": {{payee}}}
+{"value": 1000.00, "payee": {{payee}}}
 
 ### Health check
 GET {{baseUrl}}/actuator/health

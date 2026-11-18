@@ -24,28 +24,28 @@ public class TransferService {
     }
 
     @Transactional
-    public TransferResponse transfer(TransferRequest request, String idempotencyKey) {
+    public TransferResponse transfer(long payerId, TransferRequest request, String idempotencyKey) {
         validateIdempotencyKey(idempotencyKey);
         var amount = request.value().setScale(2);
-        var fingerprint = TransferFingerprint.from(request);
+        var fingerprint = TransferFingerprint.from(payerId, request);
 
-        var existing = findIdempotentResult(request.payer(), idempotencyKey, fingerprint);
+        var existing = findIdempotentResult(payerId, idempotencyKey, fingerprint);
         if (existing != null) {
             return existing;
         }
 
-        if (request.payer().equals(request.payee())) {
+        if (request.payee().equals(payerId)) {
             throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "Origem e destino devem ser diferentes.");
         }
 
         // A ordem fixa de aquisição dos locks evita deadlocks entre transferências opostas.
-        User first = lockUser(Math.min(request.payer(), request.payee()));
-        User second = lockUser(Math.max(request.payer(), request.payee()));
-        User payer = first.getId().equals(request.payer()) ? first : second;
+        User first = lockUser(Math.min(payerId, request.payee()));
+        User second = lockUser(Math.max(payerId, request.payee()));
+        User payer = first.getId().equals(payerId) ? first : second;
         User payee = first.getId().equals(request.payee()) ? first : second;
 
         // Recheck after acquiring the wallet locks so concurrent requests with the same payer serialize here.
-        existing = findIdempotentResult(request.payer(), idempotencyKey, fingerprint);
+        existing = findIdempotentResult(payerId, idempotencyKey, fingerprint);
         if (existing != null) {
             return existing;
         }
@@ -65,8 +65,10 @@ public class TransferService {
     }
 
     @Transactional(readOnly = true)
-    public TransferResponse find(UUID id) {
+    public TransferResponse find(UUID id, long requesterId) {
+        // Quem não participou recebe 404, a mesma resposta de um ID inexistente, sem confirmar que o recibo existe.
         return TransferResponse.from(transfers.findById(id)
+                .filter(transfer -> transfer.getPayerId() == requesterId || transfer.getPayeeId() == requesterId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Transferência não encontrada.")));
     }
 

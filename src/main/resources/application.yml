@@ -16,6 +16,13 @@ spring:
       fail-on-unknown-properties: true
       accept-float-as-int: false
 
+security:
+  jwt:
+    # Obrigatório e sem valor padrão: a aplicação não sobe sem um segredo de ao menos 32 bytes.
+    secret: ${JWT_SECRET:}
+    issuer: wallet-api
+    ttl: ${JWT_TTL:15m}
+
 services:
   authorization-url: ${AUTHORIZATION_URL:https://util.devi.tools/api/v2/authorize}
   notification-url: ${NOTIFICATION_URL:https://util.devi.tools/api/v1/notify}

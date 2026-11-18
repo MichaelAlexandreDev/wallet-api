@@ -2,15 +2,17 @@ package dev.starrk.wallet.demo;
 
 import java.math.BigDecimal;
 
-import dev.starrk.wallet.shared.ApiException;
+import dev.starrk.wallet.auth.AuthenticatedUser;
 import dev.starrk.wallet.user.UserRepository;
 import dev.starrk.wallet.user.UserResponse;
+import dev.starrk.wallet.user.UserService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.NotNull;
 import org.springframework.context.annotation.Profile;
-import org.springframework.http.HttpStatus;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -28,9 +30,12 @@ public class DemoDepositController {
 
     @PostMapping("/users/{id}/deposits")
     @Transactional
-    public UserResponse deposit(@PathVariable Long id, @Valid @RequestBody DepositRequest request) {
-        var user = users.findByIdForUpdate(id)
-                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Usuário não encontrado."));
+    public UserResponse deposit(@AuthenticationPrincipal Jwt token, @PathVariable Long id,
+            @Valid @RequestBody DepositRequest request) {
+        if (id != AuthenticatedUser.id(token)) {
+            throw UserService.notFound();
+        }
+        var user = users.findByIdForUpdate(id).orElseThrow(UserService::notFound);
         user.getWallet().credit(request.value());
         return UserResponse.from(user);
     }

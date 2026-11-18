@@ -5,17 +5,18 @@ import java.util.Locale;
 
 import dev.starrk.wallet.shared.ApiException;
 import org.springframework.http.HttpStatus;
-import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class UserService {
     private final UserRepository repository;
-    private final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
+    private final PasswordEncoder passwordEncoder;
 
-    public UserService(UserRepository repository) {
+    public UserService(UserRepository repository, PasswordEncoder passwordEncoder) {
         this.repository = repository;
+        this.passwordEncoder = passwordEncoder;
     }
 
     @Transactional
@@ -33,8 +34,20 @@ public class UserService {
     }
 
     @Transactional(readOnly = true)
-    public UserResponse find(Long id) {
-        return UserResponse.from(repository.findById(id)
-                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Usuário não encontrado.")));
+    public UserResponse find(long id) {
+        return UserResponse.from(repository.findById(id).orElseThrow(UserService::notFound));
+    }
+
+    /** Consulta por ID permitida só ao próprio dono; para os demais, a resposta é igual à de um ID inexistente. */
+    @Transactional(readOnly = true)
+    public UserResponse findOwned(long id, long requesterId) {
+        if (id != requesterId) {
+            throw notFound();
+        }
+        return find(id);
+    }
+
+    public static ApiException notFound() {
+        return new ApiException(HttpStatus.NOT_FOUND, "Usuário não encontrado.");
     }
 }

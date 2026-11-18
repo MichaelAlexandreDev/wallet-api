@@ -24,6 +24,9 @@ services:
       DB_USERNAME: wallet
       DB_PASSWORD: ${DB_PASSWORD:-wallet}
       SPRING_PROFILES_ACTIVE: demo
+      # Segredo apenas para a demonstração local. Em qualquer outro ambiente, defina JWT_SECRET.
+      JWT_SECRET: ${JWT_SECRET:-local-demo-secret-do-not-use-in-production}
+      JWT_TTL: ${JWT_TTL:-15m}
       AUTHORIZATION_URL: ${AUTHORIZATION_URL:-https://util.devi.tools/api/v2/authorize}
       NOTIFICATION_URL: ${NOTIFICATION_URL:-https://util.devi.tools/api/v1/notify}
       NOTIFICATION_MAX_ATTEMPTS: ${NOTIFICATION_MAX_ATTEMPTS:-5}

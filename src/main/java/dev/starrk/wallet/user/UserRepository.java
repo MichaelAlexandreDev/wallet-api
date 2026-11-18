@@ -10,6 +10,8 @@ import org.springframework.data.jpa.repository.Query;
 public interface UserRepository extends JpaRepository<User, Long> {
     boolean existsByDocumentOrEmail(String document, String email);
 
+    Optional<User> findByEmail(String email);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select u from User u where u.id = :id")
     Optional<User> findByIdForUpdate(Long id);

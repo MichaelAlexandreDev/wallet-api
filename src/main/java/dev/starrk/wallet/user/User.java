@@ -50,6 +50,7 @@ public class User {
     public Long getId() { return id; }
     public String getFullName() { return fullName; }
     public String getEmail() { return email; }
+    public String getPasswordHash() { return passwordHash; }
     public UserType getType() { return type; }
     public Wallet getWallet() { return wallet; }
 }

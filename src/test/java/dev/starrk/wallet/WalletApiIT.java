@@ -9,6 +9,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.starrk.wallet.auth.TokenService;
 import dev.starrk.wallet.integration.AuthorizationClient;
 import dev.starrk.wallet.integration.NotificationClient;
 import dev.starrk.wallet.notification.NotificationService;
@@ -26,6 +27,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -55,7 +57,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@SpringBootTest(properties = "notifications.enabled=false")
+@SpringBootTest(properties = {"notifications.enabled=false", "security.jwt.secret=" + TestSecrets.JWT_SECRET})
 @AutoConfigureMockMvc
 @ActiveProfiles("demo")
 @Testcontainers
@@ -77,6 +79,7 @@ class WalletApiIT {
     @Autowired TransferService service;
     @Autowired NotificationService notifications;
     @Autowired JdbcTemplate jdbc;
+    @Autowired TokenService tokens;
     @MockitoBean AuthorizationClient authorization;
     @MockitoBean NotificationClient notification;
 
@@ -99,7 +102,7 @@ class WalletApiIT {
                 .andExpect(header().exists("Location"))
                 .andExpect(jsonPath("$.notificationStatus").value("PENDING"))
                 .andReturn();
-        mvc.perform(get(result.getResponse().getHeader("Location")))
+        mvc.perform(get(result.getResponse().getHeader("Location")).header(HttpHeaders.AUTHORIZATION, bearer(payer)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.value").value(25.10));
         assertBalances("74.90", "25.10");
         assertThat(transfers.count()).isEqualTo(1);
@@ -109,7 +112,8 @@ class WalletApiIT {
 
     @Test
     void requiresAnIdempotencyKey() throws Exception {
-        mvc.perform(post("/transfer").contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(post("/transfer").header(HttpHeaders.AUTHORIZATION, bearer(payer))
+                        .contentType(MediaType.APPLICATION_JSON)
                         .content(json.writeValueAsString(request("10.00"))))
                 .andExpect(status().isBadRequest());
 
@@ -172,8 +176,8 @@ class WalletApiIT {
         var otherPayer = createUser("33333333333", UserType.COMMON, "50.00");
         String key = "shared-key";
 
-        var first = service.transfer(request("10.00"), key);
-        var second = service.transfer(new TransferRequest(new BigDecimal("10.00"), otherPayer.getId(), payee.getId()), key);
+        var first = service.transfer(payer.getId(), request("10.00"), key);
+        var second = service.transfer(otherPayer.getId(), new TransferRequest(new BigDecimal("10.00"), payee.getId()), key);
 
         assertThat(second.id()).isNotEqualTo(first.id());
         assertThat(transfers.count()).isEqualTo(2);
@@ -192,7 +196,7 @@ class WalletApiIT {
             if (!start.await(5, TimeUnit.SECONDS)) {
                 throw new IllegalStateException("Concurrent test did not start");
             }
-            return service.transfer(request("30.00"), key);
+            return service.transfer(payer.getId(), request("30.00"), key);
         };
 
         try (var executor = Executors.newFixedThreadPool(2)) {
@@ -230,14 +234,14 @@ class WalletApiIT {
     @Test
     void transfersBetweenCommonUsersAndAllowsExactBalance() {
         var other = createUser("33333333333", UserType.COMMON, "0.00");
-        service.transfer(new TransferRequest(new BigDecimal("100.00"), payer.getId(), other.getId()), newIdempotencyKey());
+        service.transfer(payer.getId(), new TransferRequest(new BigDecimal("100.00"), other.getId()), newIdempotencyKey());
         assertThat(balance(payer)).isZero();
         assertThat(balance(other)).isEqualByComparingTo("100.00");
     }
 
     @Test
     void rejectsMerchantAsPayer() throws Exception {
-        mvc.perform(transferPost(new TransferRequest(BigDecimal.ONE, payee.getId(), payer.getId()), newIdempotencyKey()))
+        mvc.perform(transferPost(payee, new TransferRequest(BigDecimal.ONE, payer.getId()), newIdempotencyKey()))
                 .andExpect(status().isUnprocessableEntity());
         assertBalances("100.00", "0.00");
         assertThat(transfers.count()).isZero();
@@ -255,7 +259,7 @@ class WalletApiIT {
 
     @Test
     void rejectsSelfTransfer() throws Exception {
-        mvc.perform(transferPost(new TransferRequest(BigDecimal.ONE, payer.getId(), payer.getId()), newIdempotencyKey()))
+        mvc.perform(transferPost(new TransferRequest(BigDecimal.ONE, payer.getId()), newIdempotencyKey()))
                 .andExpect(status().isUnprocessableEntity());
         assertBalances("100.00", "0.00");
         verifyNoInteractions(authorization);
@@ -263,7 +267,7 @@ class WalletApiIT {
 
     @Test
     void rejectsUnknownUser() throws Exception {
-        mvc.perform(transferPost(new TransferRequest(BigDecimal.ONE, payer.getId(), Long.MAX_VALUE), newIdempotencyKey()))
+        mvc.perform(transferPost(new TransferRequest(BigDecimal.ONE, Long.MAX_VALUE), newIdempotencyKey()))
                 .andExpect(status().isNotFound());
         assertBalances("100.00", "0.00");
         verifyNoInteractions(authorization);
@@ -285,7 +289,7 @@ class WalletApiIT {
     @Test
     void rollsBackDebitWhenDestinationWouldOverflow() {
         jdbc.update("UPDATE users SET balance = 99999999999999999.99 WHERE id = ?", payee.getId());
-        assertThatThrownBy(() -> service.transfer(request("0.01"), newIdempotencyKey())).isInstanceOf(ApiException.class);
+        assertThatThrownBy(() -> service.transfer(payer.getId(), request("0.01"), newIdempotencyKey())).isInstanceOf(ApiException.class);
         assertBalances("100.00", "99999999999999999.99");
         assertThat(transfers.count()).isZero();
         verifyNoInteractions(authorization);
@@ -294,7 +298,7 @@ class WalletApiIT {
     @ParameterizedTest
     @ValueSource(strings = {"0", "-1", "0.001", "100000000000000000.00", "null"})
     void rejectsInvalidMoneyAtTheHttpBoundary(String value) throws Exception {
-        mvc.perform(transferPost("{\"value\":" + value + ",\"payer\":" + payer.getId() + ",\"payee\":" + payee.getId() + "}", newIdempotencyKey()))
+        mvc.perform(transferPost("{\"value\":" + value + ",\"payee\":" + payee.getId() + "}", newIdempotencyKey()))
                 .andExpect(status().isBadRequest())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON));
         assertBalances("100.00", "0.00");
@@ -302,8 +306,8 @@ class WalletApiIT {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"{}", "{", "{\"value\":1,\"payer\":1.5,\"payee\":2}",
-            "{\"value\":1,\"payer\":-1,\"payee\":2}", "{\"value\":1,\"payer\":1,\"payee\":2,\"extra\":true}"})
+    @ValueSource(strings = {"{}", "{", "{\"value\":1,\"payee\":1.5}", "{\"value\":1,\"payee\":-1}",
+            "{\"value\":1,\"payee\":2,\"extra\":true}"})
     void rejectsMalformedOrIncompleteRequests(String body) throws Exception {
         mvc.perform(transferPost(body, newIdempotencyKey()))
                 .andExpect(status().isBadRequest());
@@ -320,7 +324,7 @@ class WalletApiIT {
                 throw new IllegalStateException("Concurrent test did not start");
             }
             try {
-                service.transfer(request("80.00"), newIdempotencyKey());
+                service.transfer(payer.getId(), request("80.00"), newIdempotencyKey());
                 return true;
             } catch (ApiException exception) {
                 assertThat(exception.getStatus()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
@@ -347,11 +351,11 @@ class WalletApiIT {
         try (var executor = Executors.newFixedThreadPool(2)) {
             var first = executor.submit(() -> {
                 start.await();
-                return service.transfer(new TransferRequest(new BigDecimal("10.00"), payer.getId(), other.getId()), newIdempotencyKey());
+                return service.transfer(payer.getId(), new TransferRequest(new BigDecimal("10.00"), other.getId()), newIdempotencyKey());
             });
             var second = executor.submit(() -> {
                 start.await();
-                return service.transfer(new TransferRequest(new BigDecimal("20.00"), other.getId(), payer.getId()), newIdempotencyKey());
+                return service.transfer(other.getId(), new TransferRequest(new BigDecimal("20.00"), payer.getId()), newIdempotencyKey());
             });
             start.countDown();
             assertThat(first.get(15, TimeUnit.SECONDS)).isNotNull();
@@ -364,7 +368,7 @@ class WalletApiIT {
 
     @Test
     void retriesNotificationsWithoutRepeatingThePayment() {
-        var receipt = service.transfer(request("30.00"), newIdempotencyKey());
+        var receipt = service.transfer(payer.getId(), request("30.00"), newIdempotencyKey());
         doThrow(new ResourceAccessException("timeout")).when(notification).send(any(), anyString());
         assertThat(notifications.deliverNext()).isTrue();
         var pending = transfers.findById(receipt.id()).orElseThrow();
@@ -382,7 +386,7 @@ class WalletApiIT {
         assertThat(delivered.getNotifiedAt()).isNotNull();
         assertThat(delivered.getNotificationAttempts()).isEqualTo(2);
         assertThat(delivered.getNotificationStatus().name()).isEqualTo("SENT");
-        assertThat(service.find(receipt.id()).notificationStatus()).isEqualTo("SENT");
+        assertThat(service.find(receipt.id(), payer.getId()).notificationStatus()).isEqualTo("SENT");
         assertThat(notifications.deliverNext()).isFalse();
         assertBalances("70.00", "30.00");
         assertThat(transfers.count()).isEqualTo(1);
@@ -391,7 +395,7 @@ class WalletApiIT {
 
     @Test
     void marksNotificationFailedAfterMaximumAttemptsWithoutRepeatingTransfer() throws Exception {
-        var receipt = service.transfer(request("30.00"), newIdempotencyKey());
+        var receipt = service.transfer(payer.getId(), request("30.00"), newIdempotencyKey());
         doThrow(new ResourceAccessException("timeout")).when(notification).send(any(), anyString());
 
         for (int attempt = 1; attempt <= 5; attempt++) {
@@ -411,7 +415,7 @@ class WalletApiIT {
         assertThat(failed.getNotifiedAt()).isNull();
         assertThat(jdbc.queryForObject("SELECT notification_status FROM transfers WHERE id = ?", String.class,
                 receipt.id())).isEqualTo("FAILED");
-        mvc.perform(get("/transfer/{id}", receipt.id()))
+        mvc.perform(get("/transfer/{id}", receipt.id()).header(HttpHeaders.AUTHORIZATION, bearer(payer)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.notificationStatus").value("FAILED"));
         assertThat(notifications.deliverNext()).isFalse();
@@ -430,7 +434,10 @@ class WalletApiIT {
                 .andExpect(jsonPath("$.passwordHash").doesNotExist())
                 .andExpect(jsonPath("$.document").doesNotExist())
                 .andReturn();
-        mvc.perform(get(result.getResponse().getHeader("Location"))).andExpect(status().isOk());
+        long createdId = json.readTree(result.getResponse().getContentAsString()).get("id").asLong();
+        mvc.perform(get(result.getResponse().getHeader("Location"))
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokens.issue(createdId).value()))
+                .andExpect(status().isOk());
         String hash = jdbc.queryForObject("SELECT password_hash FROM users WHERE email = 'ana@example.com'", String.class);
         assertThat(hash).isNotEqualTo("senha-segura");
         assertThat(new BCryptPasswordEncoder().matches("senha-segura", hash)).isTrue();
@@ -465,7 +472,8 @@ class WalletApiIT {
 
     @Test
     void demoDepositFundsTheWallet() throws Exception {
-        mvc.perform(post("/users/{id}/deposits", payer.getId()).contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(post("/users/{id}/deposits", payer.getId()).header(HttpHeaders.AUTHORIZATION, bearer(payer))
+                        .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"value\":50.00}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.balance").value(150));
         assertBalances("150.00", "0.00");
@@ -473,7 +481,8 @@ class WalletApiIT {
 
     @Test
     void unknownReceiptReturns404() throws Exception {
-        mvc.perform(get("/transfer/{id}", UUID.randomUUID())).andExpect(status().isNotFound());
+        mvc.perform(get("/transfer/{id}", UUID.randomUUID()).header(HttpHeaders.AUTHORIZATION, bearer(payer)))
+                .andExpect(status().isNotFound());
     }
 
     private User createUser(String document, UserType type, String balance) {
@@ -485,16 +494,30 @@ class WalletApiIT {
     }
 
     private TransferRequest request(String value) {
-        return new TransferRequest(new BigDecimal(value), payer.getId(), payee.getId());
+        return new TransferRequest(new BigDecimal(value), payee.getId());
     }
 
     private MockHttpServletRequestBuilder transferPost(TransferRequest request, String idempotencyKey) throws Exception {
-        return transferPost(json.writeValueAsString(request), idempotencyKey);
+        return transferPost(payer, request, idempotencyKey);
+    }
+
+    private MockHttpServletRequestBuilder transferPost(User from, TransferRequest request, String idempotencyKey)
+            throws Exception {
+        return transferPost(from, json.writeValueAsString(request), idempotencyKey);
     }
 
     private MockHttpServletRequestBuilder transferPost(String body, String idempotencyKey) {
-        return post("/transfer").header("Idempotency-Key", idempotencyKey)
+        return transferPost(payer, body, idempotencyKey);
+    }
+
+    private MockHttpServletRequestBuilder transferPost(User from, String body, String idempotencyKey) {
+        return post("/transfer").header(HttpHeaders.AUTHORIZATION, bearer(from))
+                .header("Idempotency-Key", idempotencyKey)
                 .contentType(MediaType.APPLICATION_JSON).content(body);
+    }
+
+    private String bearer(User user) {
+        return "Bearer " + tokens.issue(user.getId()).value();
     }
 
     private String newIdempotencyKey() {
