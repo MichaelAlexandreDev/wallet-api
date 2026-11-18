@@ -33,6 +33,13 @@ public class Transfer {
     @Column(length = 64)
     private String requestFingerprint;
 
+    @Column(length = 140)
+    private String description;
+
+    @Enumerated(EnumType.STRING)
+    @Column(length = 20)
+    private TransferCategory category;
+
     @Column(nullable = false)
     private Instant createdAt;
 
@@ -57,12 +64,18 @@ public class Transfer {
 
     public Transfer(Long payerId, Long payeeId, BigDecimal amount, String idempotencyKey,
             String requestFingerprint) {
+        this(payerId, payeeId, amount, idempotencyKey, requestFingerprint, null);
+    }
+
+    public Transfer(Long payerId, Long payeeId, BigDecimal amount, String idempotencyKey,
+            String requestFingerprint, String description) {
         this.id = UUID.randomUUID();
         this.payerId = payerId;
         this.payeeId = payeeId;
         this.amount = amount;
         this.idempotencyKey = idempotencyKey;
         this.requestFingerprint = requestFingerprint;
+        this.description = description;
         this.createdAt = Instant.now().truncatedTo(ChronoUnit.MICROS);
         this.nextNotificationAt = createdAt;
     }
@@ -85,6 +98,8 @@ public class Transfer {
     public BigDecimal getAmount() { return amount; }
     public String getIdempotencyKey() { return idempotencyKey; }
     public String getRequestFingerprint() { return requestFingerprint; }
+    public String getDescription() { return description; }
+    public TransferCategory getCategory() { return category; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getNotifiedAt() { return notifiedAt; }
     public Instant getNextNotificationAt() { return nextNotificationAt; }

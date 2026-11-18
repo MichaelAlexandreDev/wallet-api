@@ -1,5 +1,6 @@
 package dev.starrk.wallet.transfer;
 
+import java.util.List;
 import java.util.UUID;
 
 import dev.starrk.wallet.integration.AuthorizationClient;
@@ -7,12 +8,15 @@ import dev.starrk.wallet.shared.ApiException;
 import dev.starrk.wallet.user.User;
 import dev.starrk.wallet.user.UserRepository;
 import dev.starrk.wallet.user.UserType;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class TransferService {
+    public static final int MAX_STATEMENT_SIZE = 50;
+
     private final UserRepository users;
     private final TransferRepository transfers;
     private final AuthorizationClient authorization;
@@ -35,7 +39,7 @@ public class TransferService {
         }
 
         if (request.payee().equals(payerId)) {
-            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "Origem e destino devem ser diferentes.");
+            throw new ApiException(HttpStatus.UNPROCESSABLE_CONTENT, "Origem e destino devem ser diferentes.");
         }
 
         // A ordem fixa de aquisição dos locks evita deadlocks entre transferências opostas.
@@ -51,7 +55,7 @@ public class TransferService {
         }
 
         if (payer.getType() == UserType.MERCHANT) {
-            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "Lojistas não podem enviar transferências.");
+            throw new ApiException(HttpStatus.UNPROCESSABLE_CONTENT, "Lojistas não podem enviar transferências.");
         }
 
         payer.getWallet().debit(amount);
@@ -60,7 +64,7 @@ public class TransferService {
         authorization.authorize();
 
         var transfer = transfers.save(new Transfer(payer.getId(), payee.getId(), amount,
-                idempotencyKey, fingerprint));
+                idempotencyKey, fingerprint, request.description()));
         return TransferResponse.from(transfer);
     }
 
@@ -70,6 +74,18 @@ public class TransferService {
         return TransferResponse.from(transfers.findById(id)
                 .filter(transfer -> transfer.getPayerId() == requesterId || transfer.getPayeeId() == requesterId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Transferência não encontrada.")));
+    }
+
+    /** Extrato do usuário: transferências enviadas e recebidas, das mais recentes para as mais antigas. */
+    @Transactional(readOnly = true)
+    public List<TransferResponse> statement(long userId, int limit) {
+        if (limit < 1 || limit > MAX_STATEMENT_SIZE) {
+            throw new ApiException(HttpStatus.BAD_REQUEST,
+                    "O limite do extrato deve estar entre 1 e " + MAX_STATEMENT_SIZE + ".");
+        }
+        return transfers.findStatement(userId, PageRequest.of(0, limit)).stream()
+                .map(TransferResponse::from)
+                .toList();
     }
 
     private User lockUser(Long id) {

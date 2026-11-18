@@ -8,7 +8,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import dev.starrk.wallet.auth.TokenService;
 import dev.starrk.wallet.integration.AuthorizationClient;
 import dev.starrk.wallet.integration.NotificationClient;
@@ -25,7 +25,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -39,7 +39,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.web.client.ResourceAccessException;
-import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
@@ -63,7 +63,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Testcontainers
 class WalletApiIT {
     @Container
-    static final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:17");
+    static final PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:17");
 
     @DynamicPropertySource
     static void database(DynamicPropertyRegistry registry) {
@@ -141,8 +141,8 @@ class WalletApiIT {
                 .andReturn();
         String location = first.getResponse().getHeader("Location");
         var originalReceipt = json.readTree(first.getResponse().getContentAsString());
-        String transferId = originalReceipt.get("id").asText();
-        String createdAt = originalReceipt.get("createdAt").asText();
+        String transferId = originalReceipt.get("id").asString();
+        String createdAt = originalReceipt.get("createdAt").asString();
 
         mvc.perform(transferPost(request("10.00"), key))
                 .andExpect(status().isCreated())
@@ -157,6 +157,53 @@ class WalletApiIT {
         var storedTransfer = transfers.findByPayerIdAndIdempotencyKey(payer.getId(), key).orElseThrow();
         assertThat(storedTransfer.getRequestFingerprint()).matches("[0-9a-f]{64}");
         verify(authorization).authorize();
+    }
+
+    @Test
+    void storesTheOptionalDescriptionOnTheReceipt() throws Exception {
+        var created = mvc.perform(transferPost(new TransferRequest(new BigDecimal("12.00"), payee.getId(),
+                        "Almoço de sexta"), newIdempotencyKey()))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.description").value("Almoço de sexta"))
+                .andReturn();
+
+        mvc.perform(get(created.getResponse().getHeader("Location")).header(HttpHeaders.AUTHORIZATION, bearer(payee)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.description").value("Almoço de sexta"));
+        mvc.perform(transferPost(request("1.00"), newIdempotencyKey()))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.description").isEmpty());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", "   ", "linha 1\nlinha 2", "tab\there", "bell\u0007"})
+    void rejectsBlankOrControlCharacterDescriptions(String description) throws Exception {
+        mvc.perform(transferPost(new TransferRequest(BigDecimal.ONE, payee.getId(), description), newIdempotencyKey()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errors[0].field").value("description"));
+        assertBalances("100.00", "0.00");
+        verifyNoInteractions(authorization);
+    }
+
+    @Test
+    void rejectsDescriptionsLongerThan140Characters() throws Exception {
+        mvc.perform(transferPost(new TransferRequest(BigDecimal.ONE, payee.getId(), "x".repeat(141)), newIdempotencyKey()))
+                .andExpect(status().isBadRequest());
+        mvc.perform(transferPost(new TransferRequest(BigDecimal.ONE, payee.getId(), "x".repeat(140)), newIdempotencyKey()))
+                .andExpect(status().isCreated());
+    }
+
+    @Test
+    void reusingAKeyWithAnotherDescriptionIsAConflict() throws Exception {
+        String key = "description-key";
+        mvc.perform(transferPost(new TransferRequest(BigDecimal.TEN, payee.getId(), "Aluguel"), key))
+                .andExpect(status().isCreated());
+
+        mvc.perform(transferPost(new TransferRequest(BigDecimal.TEN, payee.getId(), "Outra coisa"), key))
+                .andExpect(status().isConflict());
+        mvc.perform(transferPost(new TransferRequest(BigDecimal.TEN, payee.getId(), "Aluguel"), key))
+                .andExpect(status().isCreated());
+        assertBalances("90.00", "10.00");
     }
 
     @Test
@@ -242,7 +289,7 @@ class WalletApiIT {
     @Test
     void rejectsMerchantAsPayer() throws Exception {
         mvc.perform(transferPost(payee, new TransferRequest(BigDecimal.ONE, payer.getId()), newIdempotencyKey()))
-                .andExpect(status().isUnprocessableEntity());
+                .andExpect(status().isUnprocessableContent());
         assertBalances("100.00", "0.00");
         assertThat(transfers.count()).isZero();
         verifyNoInteractions(authorization);
@@ -251,7 +298,7 @@ class WalletApiIT {
     @Test
     void rejectsInsufficientBalance() throws Exception {
         mvc.perform(transferPost(request("100.01"), newIdempotencyKey()))
-                .andExpect(status().isUnprocessableEntity());
+                .andExpect(status().isUnprocessableContent());
         assertBalances("100.00", "0.00");
         assertThat(transfers.count()).isZero();
         verifyNoInteractions(authorization);
@@ -260,7 +307,7 @@ class WalletApiIT {
     @Test
     void rejectsSelfTransfer() throws Exception {
         mvc.perform(transferPost(new TransferRequest(BigDecimal.ONE, payer.getId()), newIdempotencyKey()))
-                .andExpect(status().isUnprocessableEntity());
+                .andExpect(status().isUnprocessableContent());
         assertBalances("100.00", "0.00");
         verifyNoInteractions(authorization);
     }
@@ -327,7 +374,7 @@ class WalletApiIT {
                 service.transfer(payer.getId(), request("80.00"), newIdempotencyKey());
                 return true;
             } catch (ApiException exception) {
-                assertThat(exception.getStatus()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+                assertThat(exception.getStatus()).isEqualTo(HttpStatus.UNPROCESSABLE_CONTENT);
                 return false;
             }
         };

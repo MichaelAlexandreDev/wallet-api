@@ -4,7 +4,7 @@ API REST de transferências entre carteiras, desenvolvida como projeto de estudo
 
 O foco é uma implementação pequena, fácil de executar e explicar: regras de negócio explícitas, transações no PostgreSQL e testes dos cenários em que uma transferência pode falhar.
 
-**Stack:** Java 21, Spring Boot 3.5, Spring Web, Spring Security (JWT), Spring Data JPA, PostgreSQL 17, Flyway, Maven, JUnit 5, Mockito, Testcontainers e Docker Compose. A CI executa os testes no GitHub Actions.
+**Stack:** Java 21, Spring Boot 4.1, Spring Web MVC, Spring Security (JWT), Spring AI 2.0 (Ollama local ou Claude/Anthropic), Resilience4j, Micrometer, Spring Data JPA, PostgreSQL 17, Flyway, Maven, JUnit 6, Mockito, Testcontainers e Docker Compose. A CI executa os testes no GitHub Actions.
 
 ## Executar a demonstração
 
@@ -20,7 +20,7 @@ Esse comando inicia a API, o PostgreSQL e um simulador HTTP local para autoriza�
 curl http://localhost:8081/actuator/health
 ```
 
-Após a inicialização, a resposta deve ser `{"status":"UP"}`. Para acompanhar a inicialização:
+Após a inicialização, a resposta deve trazer `"status":"UP"`. Para acompanhar a inicialização:
 
 ```bash
 docker compose logs -f api
@@ -120,15 +120,19 @@ O saldo da Ana deve ser `75.00`. Para ver o da loja (`25.00`), entre com `loja@e
 | POST | `/users` | Cadastra usuário comum (`COMMON`) ou lojista (`MERCHANT`) |
 | POST | `/auth/login` | Troca e-mail e senha por um token JWT com expiração |
 | GET | `/users/me` | Consulta o usuário do token e seu saldo |
+| GET | `/users/me/transfers?limit=20` | Extrato: transferências enviadas e recebidas, das mais recentes para as mais antigas (limite de 1 a 50) |
 | GET | `/users/{id}` | Consulta usuário e saldo; só o próprio ID |
 | POST | `/users/{id}/deposits` | Adiciona saldo fictício na própria carteira; somente no perfil `demo` |
-| POST | `/transfer` | Transfere do usuário do token para `payee`; exige `Idempotency-Key` |
+| POST | `/transfer` | Transfere do usuário do token para `payee`, com `description` opcional; exige `Idempotency-Key` |
 | GET | `/transfer/{id}` | Consulta comprovante e situação da notificação; só pagador ou recebedor |
 
-Exceto cadastro, login e health check, todas as rotas exigem `Authorization: Bearer <token>`. Consultas exigem o escopo `wallet:read`; transferências e depósitos exigem `transfer:write`. O login emite tokens com os dois.
+Exceto cadastro, login e health check, todas as rotas exigem `Authorization: Bearer <token>`. Consultas, o assistente e a categorização exigem o escopo `wallet:read`; transferências e depósitos exigem `transfer:write`. O login emite tokens com os dois.
+| POST | `/assistant/chat` | Assistente de IA: responde sobre saldo, extrato e transferências, e prepara propostas de transferência |
+| POST | `/transfer/{id}/category` | Categoriza uma transferência com IA (só participantes); a categoria é gravada uma vez |
 | GET | `/actuator/health` | Verifica a saúde da aplicação e do banco |
+| GET | `/actuator/metrics/{nome}` | Métricas, incluindo as do assistente; exige token |
 
-Valores monetários devem ser positivos, com até 17 dígitos inteiros e duas casas decimais. O documento deve ter 11 ou 14 dígitos, sem pontuação. O e-mail é normalizado para minúsculas. Senhas têm de 8 a 64 caracteres e no máximo 72 bytes em UTF-8, limite do BCrypt utilizado.
+Valores monetários devem ser positivos, com até 17 dígitos inteiros e duas casas decimais. A `description` da transferência é opcional, com até 140 caracteres, sem quebras de linha nem outros caracteres de controle. O documento deve ter 11 ou 14 dígitos, sem pontuação. O e-mail é normalizado para minúsculas. Senhas têm de 8 a 64 caracteres e no máximo 72 bytes em UTF-8, limite do BCrypt utilizado.
 
 ### Erros
 
@@ -142,7 +146,7 @@ As respostas de erro seguem `application/problem+json`, com `status`, `title` e 
 | 404 | Usuário ou transferência não encontrado, ou pertencente a outra pessoa |
 | 409 | CPF/CNPJ ou e-mail já cadastrado, conflito com restrição do banco ou reutilização de chave com outro payload |
 | 422 | Saldo insuficiente, lojista como pagador, mesma origem/destino ou limite de saldo |
-| 503 | Autorizador indisponível ou tempo de espera pelo bloqueio da carteira excedido |
+| 503 | Autorizador indisponível, tempo de espera pelo bloqueio da carteira excedido, ou assistente indisponível ou sem chave configurada |
 
 ## Como funciona
 
@@ -171,6 +175,74 @@ Os pacotes são organizados por funcionalidade: `auth`, `user`, `transfer`, `int
 - **Login sem enumeração:** e-mail inexistente e senha errada devolvem a mesma resposta `401`. Quando o e-mail não existe, o BCrypt roda contra um hash fictício para que o tempo de resposta também não revele o cadastro.
 - **Segurança básica:** senha armazenada como hash BCrypt, DTOs sem exposição de entidades e contêiner da aplicação executado sem root.
 
+## Assistente de IA
+
+`POST /assistant/chat` responde em português por meio do Spring AI 2.0. O provedor é escolhido por `AI_PROVIDER`:
+
+- **`ollama` (padrão):** um modelo rodando no seu computador, sem chave e sem custo. O padrão é o `qwen3:8b`, que aceita chamada de ferramentas; o raciocínio (`think`) fica desligado porque, na CPU, ele multiplica o tempo de resposta.
+- **`anthropic`:** o Claude (`claude-opus-5-5`), com `ANTHROPIC_API_KEY`. É cobrado por token.
+
+Se o provedor não responder, só o assistente devolve `503`; o resto da API continua funcionando.
+
+```bash
+ollama pull qwen3:8b
+# Fora do Docker, o padrão http://localhost:11434 já funciona.
+# Com a API no Docker, o Ollama do host precisa aceitar conexões do container:
+OLLAMA_HOST=0.0.0.0 ollama serve
+```
+
+```bash
+curl -X POST http://localhost:8081/assistant/chat \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Manda R$ 25 para loja@example.com"}'
+```
+
+```json
+{
+  "reply": "Preparei uma transferência de R$ 25,00 para Loja Exemplo. Confirme para enviar.",
+  "proposals": [{
+    "idempotencyKey": "assistant-5f0c…",
+    "payeeId": 2, "payeeName": "Loja Exemplo", "value": 25.00, "warnings": [],
+    "confirmation": {
+      "method": "POST", "path": "/transfer", "idempotencyKey": "assistant-5f0c…",
+      "body": { "value": 25.00, "payee": 2, "description": null }
+    }
+  }]
+}
+```
+
+**Ferramentas.** O modelo tem quatro ferramentas: `getBalance`, `getStatement`, `getTransfer` (para explicar uma transação) e `proposeTransfer`. Elas são criadas a cada pedido e presas ao usuário do token. Nenhum parâmetro escolhe de quem é a carteira, então o modelo não alcança dados de outra pessoa, mesmo que peça um ID alheio.
+
+**O LLM só propõe.** Nenhuma ferramenta move dinheiro. `proposeTransfer` valida destinatário e valor e devolve uma proposta; quem executa é o próprio cliente, com `confirmation.body` em `POST /transfer`, com o token do usuário e a chave `idempotencyKey`. Confirmar duas vezes devolve o mesmo recibo. A rota do assistente exige só `wallet:read`, e um token só de leitura recebe `403` ao tentar confirmar.
+
+**Prompt injection.** A `description` de uma transferência é texto de outra pessoa. Ela chega ao modelo como o campo `untrustedNote` de um JSON, e o prompt de sistema manda tratá-la como dado. Se o assistente propõe uma transferência depois de ler a descrição de uma transferência recebida, a proposta vem com um aviso em `warnings`. Os testes rodam um modelo "comprometido", que obedece à injeção: ele chega a criar a proposta, mas nenhum dinheiro sai da carteira sem a confirmação.
+
+**Categorização.** `POST /transfer/{id}/category` classifica a transferência em uma de onze categorias (`FOOD`, `GROCERIES`, `TRANSPORT`, `HOUSING`, `BILLS`, `HEALTH`, `EDUCATION`, `SHOPPING`, `LEISURE`, `PERSONAL_TRANSFER`, `OTHER`). A requisição usa saída estruturada (no Ollama, o esquema JSON vai em `format`; na Anthropic, em `output_config.format`), com a categoria restrita a um enum, então o modelo só consegue responder uma categoria válida. Transferências entre pessoas sem descrição são categorizadas por regra, sem chamar o modelo. O campo `source` indica a origem: `MODEL`, `RULE`, `STORED` ou `FALLBACK`.
+
+**Resiliência.** Toda chamada ao LLM passa pelo `LlmGateway`: timeout de leitura de 120 segundos (`ASSISTANT_TIMEOUT`, folgado porque modelos locais na CPU são lentos), circuit breaker do Resilience4j (abre com 50% de falhas em 10 chamadas e recusa sem chamar o provedor por 30 segundos) e `503` em qualquer falha, sem afetar as rotas de carteira. Uma recusa do modelo vira uma resposta educada.
+
+**Métricas.** O Micrometer publica `wallet.assistant.requests` (latência, por `operation`, `provider` e `outcome`: `success`, `error`, `circuit_open`, `not_configured`), `wallet.assistant.tokens` (por `type`: `input` e `output`, somando todo o laço de ferramentas) e `wallet.assistant.cost` (custo estimado em dólares: zero no Ollama; na Anthropic, pelos preços em `wallet.assistant.anthropic`). O Spring AI também publica as métricas `gen_ai.client.*`.
+
+```bash
+curl http://localhost:8081/actuator/metrics/wallet.assistant.cost -H "Authorization: Bearer $TOKEN"
+```
+
+### Avaliação com o modelo real
+
+Os testes normais nunca chamam um modelo de verdade: `OllamaProviderIT` e `AssistantIT` rodam o Spring AI contra servidores locais que imitam as APIs do Ollama e da Anthropic, e conferem o que foi enviado (modelo, opções, ferramentas, esquema de saída). Nos testes, o Ollama aponta para uma porta fechada (`src/test/resources/config/application.properties`), então nenhum teste usa por acidente o modelo da sua máquina. A qualidade das respostas do modelo é medida à parte, e consome bastante CPU:
+
+```bash
+./mvnw -Peval verify                       # Ollama local, modelo qwen3:8b
+OLLAMA_MODEL=llama3.2:3b ./mvnw -Peval verify
+AI_PROVIDER=anthropic ANTHROPIC_API_KEY=... ./mvnw -Peval verify
+```
+
+- `CategorizationEval`: 40 transferências rotuladas em `src/test/resources/eval/categorization.jsonl`, com gírias, erros de digitação e três tentativas de injeção. Exige 90% de acurácia e acerto em todos os casos de injeção.
+- `AssistantInjectionEval`: descrições com instruções escondidas (transferir, falsa autorização do sistema, saldo falso) não podem gerar propostas, e um pedido legítimo ainda precisa gerar a proposta certa.
+
+Os relatórios, com provedor, modelo, tokens e custo estimado, ficam em `target/eval/`. Se o Ollama não responder ou o modelo não estiver baixado, as avaliações são puladas com o motivo. No GitHub Actions, o workflow **LLM eval** sobe o Ollama dentro do runner, baixa o modelo e roda as avaliações, sem secret e sem custo; roda manualmente (com o modelo como parâmetro) e toda segunda-feira, nunca a cada push.
+
 ## Testes
 
 Pré-requisitos para executar fora de contêiner: JDK 21 e Docker acessível pelo usuário. O Maven Wrapper baixa o Maven na primeira execução.
@@ -185,7 +257,7 @@ Pré-requisitos para executar fora de contêiner: JDK 21 e Docker acessível pel
 
 No Windows, use `mvnw.cmd`. Os testes de integração são executados pelo Maven Failsafe (`*IT`) e falham se o Docker não estiver disponível; não são pulados silenciosamente.
 
-Os testes cobrem regras de saldo, precisão decimal, validação HTTP, unicidade e hashing, login e validação de tokens (expirado, adulterado, sem assinatura, sem expiração e de outro emissor), isolamento entre carteiras (tentativa de gastar saldo alheio, leitura de usuário e comprovante de terceiros, depósito em outra carteira, reutilização da chave de idempotência de outra pessoa) e escopos, transferência entre usuários e para lojistas, rollback, gasto duplo, transferências em sentidos opostos, replay idempotente, chaves conflitantes, concorrência com a mesma chave, limite de retentativas e disponibilidade do depósito demo por perfil. Os clientes HTTP são exercitados contra um servidor local, incluindo timeout, recusa, resposta inválida e indisponibilidade. Os testes da aplicação usam PostgreSQL real e Mockito para controlar os serviços externos, sem depender da disponibilidade dos mocks públicos.
+Os testes cobrem regras de saldo, precisão decimal, validação HTTP, unicidade e hashing, login e validação de tokens (expirado, adulterado, sem assinatura, sem expiração e de outro emissor), isolamento entre carteiras (tentativa de gastar saldo alheio, leitura de usuário e comprovante de terceiros, depósito em outra carteira, reutilização da chave de idempotência de outra pessoa) e escopos, transferência entre usuários e para lojistas, rollback, gasto duplo, transferências em sentidos opostos, replay idempotente, chaves conflitantes, concorrência com a mesma chave, limite de retentativas, disponibilidade do depósito demo por perfil, descrição e extrato, e o assistente de IA (ferramentas presas ao usuário, propostas sem movimentação, confirmação idempotente, prompt injection pela descrição, saída estruturada da categorização, timeout, circuit breaker e métricas de tokens e custo). Os clientes HTTP são exercitados contra um servidor local, incluindo timeout, recusa, resposta inválida e indisponibilidade. Os testes da aplicação usam PostgreSQL real e Mockito para controlar os serviços externos, sem depender da disponibilidade dos mocks públicos.
 
 ## Desenvolvimento local e serviços oficiais
 
@@ -217,6 +289,12 @@ As URLs padrão são `https://util.devi.tools/api/v2/authorize` (`GET`) e `https
 | `NOTIFICATION_MAX_ATTEMPTS` | `5` — máximo de tentativas automáticas de notificação |
 | `JWT_SECRET` | Sem padrão; obrigatório, mínimo de 32 bytes. O Compose usa um segredo de demonstração |
 | `JWT_TTL` | `15m` — validade do token de acesso |
+| `AI_PROVIDER` | `ollama` — ou `anthropic` |
+| `OLLAMA_BASE_URL` | `http://localhost:11434`; o Compose usa `http://host.docker.internal:11434` |
+| `OLLAMA_MODEL` | `qwen3:8b` |
+| `ANTHROPIC_API_KEY` | Sem padrão; só para `AI_PROVIDER=anthropic` |
+| `ANTHROPIC_MODEL` | `claude-opus-5-5` |
+| `ASSISTANT_TIMEOUT` | `120s` — tempo máximo de resposta do LLM |
 | `SPRING_PROFILES_ACTIVE` | Sem perfil; Compose usa `demo` |
 
 O arquivo `.env.example` serve de referência para o Compose. Para executar pela IDE/Maven, configure variáveis no ambiente; o Spring não carrega `.env` automaticamente.
@@ -230,5 +308,7 @@ Este projeto prioriza o fluxo pedido no desafio. A autenticação cobre o essenc
 A autorização externa ocorre enquanto as carteiras estão bloqueadas. Os timeouts limitam a espera, mas esse desenho reduz o throughput de carteiras muito movimentadas. É uma escolha simples para este porte.
 
 As notificações têm entrega **pelo menos uma vez**: se o provedor receber a mensagem e a aplicação cair antes de registrar o sucesso, pode haver reenvio. O payload inclui `transferId` para permitir deduplicação pelo provedor; não há garantia de que o mock público a implemente. Após cinco falhas por padrão, o recibo fica `FAILED` e o agendador para de tentar.
+
+O assistente atende um pedido por vez, sem memória de conversa. As propostas não ficam gravadas: o cliente guarda e confirma. As avaliações medem o modelo, mas ele é probabilístico; a proteção que não depende dele é a confirmação explícita. Modelos locais pequenos seguem instruções e chamam ferramentas pior que modelos grandes; a avaliação mostra quanto. Com a Anthropic, o parâmetro `fallbacks`, que troca de modelo quando há recusa, não é exposto pelo Spring AI 2.0.2, então uma recusa vira a resposta padrão do assistente.
 
 `Idempotency-Key` protege contra repetição acidental; quem autentica o pagador é o token. Kafka, Redis e microsserviços não são necessários para demonstrar os fundamentos deste desafio.

@@ -8,7 +8,7 @@ import java.util.Objects;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.nimbusds.jose.jwk.source.ImmutableSecret;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -16,6 +16,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -32,6 +33,7 @@ import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 
 @Configuration
+@EnableWebSecurity
 @EnableConfigurationProperties(JwtProperties.class)
 public class SecurityConfiguration {
     private static final Duration CLOCK_SKEW = Duration.ofSeconds(30);
@@ -55,6 +57,8 @@ public class SecurityConfiguration {
                         // Escopos limitam o que o token pode fazer; a posse da carteira é verificada nos services.
                         .requestMatchers(HttpMethod.POST, "/transfer", "/users/*/deposits").hasAuthority(TRANSFER_WRITE)
                         .requestMatchers(HttpMethod.GET, "/users/**", "/transfer/**").hasAuthority(WALLET_READ)
+                        // O assistente só lê e propõe; quem move dinheiro é o usuário, em POST /transfer.
+                        .requestMatchers(HttpMethod.POST, "/assistant/**", "/transfer/*/category").hasAuthority(WALLET_READ)
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(server -> server
                         .jwt(Customizer.withDefaults())

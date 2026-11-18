@@ -5,8 +5,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ObjectNode;
 import dev.starrk.wallet.auth.JwtProperties;
 import dev.starrk.wallet.auth.TokenService;
 import dev.starrk.wallet.integration.AuthorizationClient;
@@ -18,7 +18,7 @@ import dev.starrk.wallet.user.UserType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -33,7 +33,7 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
-import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
@@ -51,7 +51,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Testcontainers
 class AccessControlIT {
     @Container
-    static final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:17");
+    static final PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:17");
 
     @DynamicPropertySource
     static void database(DynamicPropertyRegistry registry) {
@@ -179,6 +179,36 @@ class AccessControlIT {
 
         assertThat(json.readTree(biasReceipt).get("id")).isNotEqualTo(json.readTree(anasReceipt).get("id"));
         assertBalances("90.00", "40.00", "20.00");
+    }
+
+    @Test
+    void statementListsOnlyTheUsersOwnTransfersNewestFirst() throws Exception {
+        mvc.perform(transferAs(ana, store.getId(), "10.00")).andExpect(status().isCreated());
+        mvc.perform(transferAs(bia, store.getId(), "5.00")).andExpect(status().isCreated());
+        mvc.perform(transferAs(bia, ana.getId(), "7.00")).andExpect(status().isCreated());
+
+        mvc.perform(get("/users/me/transfers").header(HttpHeaders.AUTHORIZATION, bearer(ana)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(2))
+                .andExpect(jsonPath("$[0].value").value(7.0))
+                .andExpect(jsonPath("$[0].payer").value(bia.getId()))
+                .andExpect(jsonPath("$[1].value").value(10.0));
+        mvc.perform(get("/users/me/transfers").param("limit", "1").header(HttpHeaders.AUTHORIZATION, bearer(store)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1));
+        mvc.perform(get("/users/me/transfers").param("limit", "51").header(HttpHeaders.AUTHORIZATION, bearer(ana)))
+                .andExpect(status().isBadRequest());
+        mvc.perform(get("/users/me/transfers")).andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void unreachableModelAnswers503AndTheWalletKeepsWorking() throws Exception {
+        // O Ollama dos testes aponta para uma porta fechada (src/test/resources/config).
+        mvc.perform(post("/assistant/chat").header(HttpHeaders.AUTHORIZATION, bearer(ana))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"message\":\"Qual meu saldo?\"}"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.detail").value(containsString("indisponível")));
+        mvc.perform(transferAs(ana, store.getId(), "1.00")).andExpect(status().isCreated());
     }
 
     @Test

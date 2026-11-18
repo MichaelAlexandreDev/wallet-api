@@ -1,0 +1,57 @@
+name: LLM eval
+
+# Avalia a categorização e a resistência a prompt injection com um modelo real, rodando no Ollama
+# dentro do próprio runner: não precisa de chave nem gera custo. Modelos na CPU são lentos, por isso
+# roda só manualmente e uma vez por semana, nunca a cada push.
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Modelo do Ollama
+        default: qwen3:8b
+  schedule:
+    - cron: '0 9 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: llm-eval
+  cancel-in-progress: false
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      AI_PROVIDER: ollama
+      OLLAMA_BASE_URL: http://localhost:11434
+      OLLAMA_MODEL: ${{ inputs.model || 'qwen3:8b' }}
+    services:
+      ollama:
+        image: ollama/ollama:0.40.16
+        ports:
+          - 11434:11434
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Pull model
+        run: |
+          curl -sf "$OLLAMA_BASE_URL/api/pull" -d "{\"model\":\"$OLLAMA_MODEL\",\"stream\":false}"
+          curl -sf "$OLLAMA_BASE_URL/api/tags"
+      - name: Run evals
+        run: ./mvnw -B -ntp -Peval verify
+      - name: Publish summary
+        if: always()
+        run: cat target/eval/*.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-eval-reports
+          path: target/eval/
+          if-no-files-found: ignore
